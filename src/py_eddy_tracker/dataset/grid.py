@@ -578,6 +578,7 @@ class GridDataset(object):
         precision=None,
         force_height_unit=None,
         force_speed_unit=None,
+        vorticity_name='vrt',
         mle=1,
     ):
         """
@@ -616,7 +617,11 @@ class GridDataset(object):
             self.units(grid_height) if force_height_unit is None else force_height_unit
         )
         units = UnitRegistry()
-        in_h_unit = units.parse_expression(h_units)
+        if grid_height in ['ow']:
+            in_h_unit = None
+        else:
+            in_h_unit = units.parse_expression(h_units)
+            
         if in_h_unit is not None:
             factor, _ = in_h_unit.to("m").to_tuple()
             logger.info(
@@ -629,14 +634,31 @@ class GridDataset(object):
 
         # Get h grid
         data = self.grid(grid_height).astype("f8")
+        
+        if grid_height in ['ow']:
+            # Get vorticity as an aditional field (to identify cyc/acyc)
+            vrt = self.grid(vorticity_name, indexs=dict(xi_u=slice(None),eta_v=slice(None))).astype('f8')
+            
+        if vorticity_name=='vrt': vrt = self.psi2rho(vrt)
+        
+        print(vrt.shape,data.shape)
+            
         # In case of a reduce mask
         if len(data.mask.shape) == 0 and not data.mask:
             data.mask = zeros(data.shape, dtype="bool")
+            data.mask[isnan(data)] = 1
         # we remove noisy information
         if precision is not None:
             data = (data / precision).round() * precision
         # Compute levels for ssh
-        z_min, z_max = data.min(), data.max()
+
+        if grid_height in ['ow']:
+            #z_min, z_max = -2e-10, -0.5e-10#-0.2 * data.std()
+            z_min, z_max = -0.3 * data.std(),-0.2 * data.std()
+        else:
+            z_min, z_max = data.min(), data.max()
+        print('init z_min, z_max, step',z_min, z_max, step)
+        print(data.mask.sum())
         d_z = z_max - z_min
         data_tmp = data[~data.mask]
         epsilon = 0.001  # in %
@@ -654,8 +676,9 @@ class GridDataset(object):
                 z_max_p,
             )
             z_min, z_max = z_min_p, z_max_p
-
+        print('step1 z_min, z_max, step',z_min, z_max, step) #debug
         levels = arange(z_min - z_min % step, z_max - z_max % step + 2 * step, step)
+        print('levels',levels) #debug
 
         # Get x and y values
         x, y = self.x_c, self.y_c
@@ -682,7 +705,10 @@ class GridDataset(object):
         a_and_c = list()
         for anticyclonic_search in [True, False]:
             eddies = list()
-            iterator = 1 if anticyclonic_search else -1
+            if grid_height in ['ow']:
+                iterator = -1
+            else:
+                iterator = 1 if anticyclonic_search else -1
 
             # Loop over each collection
             for coll_ind, coll in enumerate(self.contours.iter(step=iterator)):
@@ -724,10 +750,17 @@ class GridDataset(object):
                         continue
 
                     # Test to know cyclone or anticyclone
-                    if has_value(
+                    if grid_height in ['ow']:
+                        #acyc_not_cyc = vrt[i_x, i_y] <= 0
+                    	if has_value(
+                        vrt, i_x_in, i_y_in, 0, below=not anticyclonic_search
+                    ):
+                        	continue
+                    else:
+                    	if has_value(
                         data, i_x_in, i_y_in, cvalues, below=anticyclonic_search
                     ):
-                        continue
+                        	continue
 
                     # FIXME : Maybe limit max must be replace with a maximum of surface
                     if (
@@ -744,7 +777,7 @@ class GridDataset(object):
                         data,
                         anticyclonic_search=anticyclonic_search,
                         level=self.contours.levels[corrected_coll_index],
-                        step=step,
+                        step=step, grid_height=grid_height, 
                         mle=mle,
                     )
                     # If we have a valid amplitude
@@ -980,6 +1013,7 @@ class GridDataset(object):
         anticyclonic_search=True,
         level=None,
         step=None,
+        grid_height='sla',
         mle=1,
     ):
         # Instantiate Amplitude object
@@ -996,10 +1030,16 @@ class GridDataset(object):
             mle=mle,
         )
 
-        if anticyclonic_search:
-            reset_centroid = amp.all_pixels_above_h0(level)
+        if grid_height in ['ow']:
+            if anticyclonic_search:
+                reset_centroid = amp.all_pixels_below_h0(level,grid_height='ow')
+            else:
+                reset_centroid = amp.all_pixels_below_h0(level,grid_height='ow')
         else:
-            reset_centroid = amp.all_pixels_below_h0(level)
+            if anticyclonic_search:
+                reset_centroid = amp.all_pixels_above_h0(level)
+            else:
+                reset_centroid = amp.all_pixels_below_h0(level)
 
         return reset_centroid, amp
 

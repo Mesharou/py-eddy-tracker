@@ -87,7 +87,7 @@ class Amplitude(object):
         """
         return self.interval_min <= self.amplitude
 
-    def all_pixels_below_h0(self, level):
+    def all_pixels_below_h0(self, level, grid_height='sla'):
         """
         Check CSS11 criterion 1: The SSH values of all of the pixels
         are below a given SSH threshold for cyclonic eddies.
@@ -120,8 +120,10 @@ class Amplitude(object):
                 nb_real_extrema = (
                     (level - self.grid_extract.data[lmi_i, lmi_j]) >= self.interval_min
                 ).sum()
-                if nb_real_extrema > self.mle:
-                    return False
+                
+                if grid_height!='ow':
+                    if nb_real_extrema > self.mle:
+                        return False
                 index = self.grid_extract.data[lmi_i, lmi_j].argmin()
                 i, j = lmi_i[index], lmi_j[index]
             self.amplitude = abs(self.grid_extract.data[i, j] - self.h_0)
