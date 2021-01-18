@@ -32,6 +32,7 @@ from numpy import (
     round_,
     nanmean,
     exp,
+    nanstd,
     mean as np_mean,
 )
 from datetime import datetime
@@ -654,7 +655,7 @@ class GridDataset(object):
 
         if grid_height in ['ow']:
             #z_min, z_max = -2e-10, -0.5e-10#-0.2 * data.std()
-            z_min, z_max = -0.3 * data.std(),-0.2 * data.std()
+            z_min, z_max = -0.3 * nanstd(data),-0.2 * nanstd(data)
         else:
             z_min, z_max = data.min(), data.max()
         print('init z_min, z_max, step',z_min, z_max, step)
