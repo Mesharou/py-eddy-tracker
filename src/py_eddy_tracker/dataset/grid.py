@@ -32,6 +32,7 @@ from numpy import (
     round_,
     nanmean,
     exp,
+    nanstd,
     mean as np_mean,
 )
 from datetime import datetime
@@ -571,6 +572,8 @@ class GridDataset(object):
         uname,
         vname,
         date,
+        z_min=None,
+        z_max=None,
         step=0.005,
         shape_error=55,
         sampling=50,
@@ -589,6 +592,8 @@ class GridDataset(object):
         :param str vname: Grid name of v speed component
         :param datetime.datetime date: Date which will be store in object to date data
         :param float,int step: Height between two layers in m
+        :param float z_min : minimum value foe eddy detection 
+        :param float z_max : maximum value for eddy detection
         :param float,int shape_error: Maximal error allow for outter contour in %
         :param int sampling: Sampling of contour and speed profile
         :param (int,int),None pixel_limit:
@@ -640,8 +645,6 @@ class GridDataset(object):
             vrt = self.grid(vorticity_name, indexs=dict(xi_u=slice(None),eta_v=slice(None))).astype('f8')
             
         if vorticity_name=='vrt': vrt = self.psi2rho(vrt)
-        
-        print(vrt.shape,data.shape)
             
         # In case of a reduce mask
         if len(data.mask.shape) == 0 and not data.mask:
@@ -650,35 +653,33 @@ class GridDataset(object):
         # we remove noisy information
         if precision is not None:
             data = (data / precision).round() * precision
-        # Compute levels for ssh
-
-        if grid_height in ['ow']:
-            #z_min, z_max = -2e-10, -0.5e-10#-0.2 * data.std()
-            z_min, z_max = -0.3 * data.std(),-0.2 * data.std()
-        else:
-            z_min, z_max = data.min(), data.max()
-        print('init z_min, z_max, step',z_min, z_max, step)
-        print(data.mask.sum())
-        d_z = z_max - z_min
-        data_tmp = data[~data.mask]
-        epsilon = 0.001  # in %
-        z_min_p, z_max_p = (
-            percentile(data_tmp, epsilon),
-            percentile(data_tmp, 100 - epsilon),
-        )
-        d_zp = z_max_p - z_min_p
-        if d_z / d_zp > 2:
-            logger.warning(
-                "Maybe some extrema are present zmin %f (m) and zmax %f (m) will be replace by %f and %f",
-                z_min,
-                z_max,
-                z_min_p,
-                z_max_p,
+        # Compute levels for ssh/okubo
+        if z_min is None or z_max is None:
+            if grid_height in ['ow']:
+                z_min, z_max = -0.3 * 1e-9, -0.2 * 1e-9
+                #z_min, z_max = -0.3 * nanstd(data),-0.2 * nanstd(data)
+            else:
+                z_min, z_max = data.min(), data.max()
+            d_z = z_max - z_min
+            data_tmp = data[~data.mask]
+            epsilon = 0.001  # in %
+            z_min_p, z_max_p = (
+                percentile(data_tmp, epsilon),
+                percentile(data_tmp, 100 - epsilon),
             )
-            z_min, z_max = z_min_p, z_max_p
+            d_zp = z_max_p - z_min_p
+            if d_z / d_zp > 2:
+                logger.warning(
+                "Maybe some extrema are present zmin %f (m) and zmax %f (m) will be replace by %f and %f",
+                    z_min,
+                    z_max,
+                    z_min_p,
+                    z_max_p,
+                )
+                z_min, z_max = z_min_p, z_max_p
+        
         print('step1 z_min, z_max, step',z_min, z_max, step) #debug
         levels = arange(z_min - z_min % step, z_max - z_max % step + 2 * step, step)
-        print('levels',levels) #debug
 
         # Get x and y values
         x, y = self.x_c, self.y_c
