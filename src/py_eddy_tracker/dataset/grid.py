@@ -656,8 +656,8 @@ class GridDataset(object):
         # Compute levels for ssh/okubo
         if z_min is None or z_max is None:
             if grid_height in ['ow']:
-                z_min, z_max = -0.3 * 1e-9, -0.2 * 1e-9
-                #z_min, z_max = -0.3 * nanstd(data),-0.2 * nanstd(data)
+                #z_min, z_max = -0.3 * 1e-9, -0.2 * 1e-9
+                z_min, z_max = -0.3 * nanstd(data),-0.2 * nanstd(data)
             else:
                 z_min, z_max = data.min(), data.max()
             d_z = z_max - z_min
