@@ -642,8 +642,7 @@ class GridDataset(object):
         if grid_height in ['ow']:
             # Get vorticity as an aditional field (to identify cyc/acyc)
             vrt = self.grid(vorticity_name, indexs=dict(xi_u=slice(None),eta_v=slice(None))).astype('f8')
-            
-        if vorticity_name=='vrt': vrt = self.psi2rho(vrt)
+            if vorticity_name=='vrt': vrt = self.psi2rho(vrt)
             
         # In case of a reduce mask
         if len(data.mask.shape) == 0 and not data.mask:
