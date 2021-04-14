@@ -1039,7 +1039,6 @@ class GridDataset(object):
         data,
         anticyclonic_search=True,
         level=None,
-        interval=None,
         grid_height='sla',
         mle=1,
         **kwargs

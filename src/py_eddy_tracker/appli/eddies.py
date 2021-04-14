@@ -12,7 +12,9 @@ from os.path import join as join_path
 from re import compile as re_compile
 
 from netCDF4 import Dataset
+from datetime import datetime
 from numpy import bincount, bytes_, empty, in1d, unique
+from numpy import dtype as npdtype
 from yaml import safe_load
 
 from .. import EddyParser
@@ -241,7 +243,7 @@ def browse_dataset_in(
         len(filenames),
         dtype=[
             ("filename", "S500"),
-            ("date", "datetime64[D]"),
+            ("datetime", npdtype('M8[us]')),
         ],
     )
     dataset_list["filename"] = filenames
@@ -249,10 +251,10 @@ def browse_dataset_in(
     logger.info("%s grids available", dataset_list.shape[0])
     mode_attrs = False
     if "(" not in date_regexp:
-        logger.debug("Attrs date : %s", date_regexp)
+        logger.debug("Attrs datetime : %s", date_regexp)
         mode_attrs = date_regexp.strip().split(":")
     else:
-        logger.debug("Pattern date : %s", date_regexp)
+        logger.debug("Pattern datetime : %s", date_regexp)
 
     for item in dataset_list:
         str_date = None
@@ -268,13 +270,14 @@ def browse_dataset_in(
                 str_date = result.groups()[0]
 
         if str_date is not None:
-            item["date"] = datetime.strptime(str_date, date_model).date()
+            item["datetime"] = datetime.strptime(str_date, date_model)
 
-    dataset_list.sort(order=["date", "filename"])
+    dataset_list.sort(order=["datetime", "filename"])
 
-    steps = unique(dataset_list["date"][1:] - dataset_list["date"][:-1])
+    steps = unique(dataset_list["datetime"][1:] - dataset_list["datetime"][:-1])
     if len(steps) > 1:
-        raise Exception("Several days steps in grid dataset %s" % steps)
+        print("Several days steps in grid dataset %s" % steps)
+        #raise Exception("Several days steps in grid dataset %s" % steps)
 
     if sub_sampling_step != 1:
         logger.info("Grid subsampling %d", sub_sampling_step)
@@ -283,11 +286,11 @@ def browse_dataset_in(
     if start_date is not None or end_date is not None:
         logger.info(
             "Available grid from %s to %s",
-            dataset_list[0]["date"],
-            dataset_list[-1]["date"],
+            dataset_list[0]["datetime"],
+            dataset_list[-1]["datetime"],
         )
         logger.info("Filtering grid by time %s, %s", start_date, end_date)
-        mask = (dataset_list["date"] >= start_date) * (dataset_list["date"] <= end_date)
+        mask = (dataset_list["datetime"] >= start_date) * (dataset_list["datetime"] <= end_date)
 
         dataset_list = dataset_list[mask]
     return dataset_list
@@ -304,7 +307,7 @@ def track(
     correspondances_only=False,
     **kw_c,
 ):
-    kw = dict(date_regexp=".*_([0-9]*?).[nz].*", date_model="%Y%m%d")
+    kw = dict(date_regexp=".*_([0-9]*?).[nz].*", date_model="%Y%m%d%H")
     if isinstance(pattern, list):
         kw.update(dict(data_dir=None, files_model=None, files=pattern))
     else:
