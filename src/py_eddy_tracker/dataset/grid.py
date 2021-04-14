@@ -811,7 +811,7 @@ class GridDataset(object):
                         data,
                         anticyclonic_search=anticyclonic_search,
                         level=self.contours.levels[corrected_coll_index],
-                        step=step, grid_height=grid_height,
+                        interval=step, grid_height=grid_height,
                         mle=mle,
                         **kwargs,
                     )
@@ -1039,7 +1039,7 @@ class GridDataset(object):
         data,
         anticyclonic_search=True,
         level=None,
-        step=None,
+        interval=None,
         grid_height='sla',
         mle=1,
         **kwargs
