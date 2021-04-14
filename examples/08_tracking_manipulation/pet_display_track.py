@@ -4,17 +4,20 @@ Display Tracks
 
 """
 
-from matplotlib import pyplot as plt
-from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 import py_eddy_tracker_sample
+from matplotlib import pyplot as plt
+
+from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
 # %%
 # Load experimental atlas
 a = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Anticyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path(
+        "eddies_med_adt_allsat_dt2018/Anticyclonic.zarr"
+    )
 )
 c = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
 )
 print(a)
 
@@ -35,7 +38,7 @@ fig = plt.figure(figsize=(12, 5))
 ax = fig.add_axes((0.05, 0.1, 0.9, 0.9))
 ax.set_aspect("equal")
 ax.set_xlim(-6, 36.5), ax.set_ylim(30, 46)
-a.plot(ax, ref=-10, label="Anticyclonic", color="r", lw=0.1)
-c.plot(ax, ref=-10, label="Cyclonic", color="b", lw=0.1)
+a.plot(ax, ref=-10, label="Anticyclonic ({nb_tracks} tracks)", color="r", lw=0.1)
+c.plot(ax, ref=-10, label="Cyclonic ({nb_tracks} tracks)", color="b", lw=0.1)
 ax.legend()
 ax.grid()

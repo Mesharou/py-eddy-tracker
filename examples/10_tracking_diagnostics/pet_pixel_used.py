@@ -1,27 +1,35 @@
 """
 Count pixel used
-======================
+================
 
+Do Geo stat with frequency and compare with center count
+method: :ref:`sphx_glr_python_module_10_tracking_diagnostics_pet_center_count.py`
 """
+import py_eddy_tracker_sample
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+
 from py_eddy_tracker.observations.tracking import TrackEddiesObservations
-import py_eddy_tracker_sample
 
 # %%
 # Load an experimental med atlas over a period of 26 years (1993-2019)
 a = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Anticyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path(
+        "eddies_med_adt_allsat_dt2018/Anticyclonic.zarr"
+    )
 )
 c = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
 )
-t0, t1 = a.period
+
+# %%
+# Parameters
 step = 0.125
 bins = ((-10, 37, step), (30, 46, step))
 kwargs_pcolormesh = dict(
-    cmap="terrain_r", vmin=0, vmax=0.75, factor=1 / (t1 - t0), name="count"
+    cmap="terrain_r", vmin=0, vmax=0.75, factor=1 / a.nb_days, name="count"
 )
+
 
 # %%
 # Plot
@@ -54,10 +62,30 @@ m = g_c.display(ax_all, **kwargs_pcolormesh)
 plt.colorbar(m, cax=fig.add_axes([0.95, 0.27, 0.01, 0.7]))
 
 g_c.vars["count"] = ratio
-m = g_c.display(ax_ratio, name="count", vmin=0.1, vmax=10, norm=LogNorm(), cmap='coolwarm_r')
+m = g_c.display(
+    ax_ratio, name="count", norm=LogNorm(vmin=0.1, vmax=10), cmap="coolwarm_r"
+)
 plt.colorbar(m, cax=fig.add_axes([0.95, 0.02, 0.01, 0.2]))
 
 for ax in (ax_a, ax_c, ax_all, ax_ratio):
     ax.set_aspect("equal")
     ax.set_xlim(-6, 36.5), ax.set_ylim(30, 46)
     ax.grid()
+
+# %%
+# Count Anticyclones as a function of lifetime
+# --------------------------------------------
+fig = plt.figure(figsize=(12, 10))
+mask = a.lifetime >= 60
+ax_long = fig.add_axes([0.03, 0.53, 0.90, 0.45])
+g_a = a.grid_count(bins, intern=True, filter=mask)
+g_a.display(ax_long, **kwargs_pcolormesh)
+ax_long.set_title(f"Anticyclones with lifetime >= 60 days ({mask.sum()} Obs)")
+ax_short = fig.add_axes([0.03, 0.03, 0.90, 0.45])
+g_a = a.grid_count(bins, intern=True, filter=~mask)
+m = g_a.display(ax_short, **kwargs_pcolormesh)
+ax_short.set_title(f"Anticyclones with lifetime < 60 days ({(~mask).sum()} Obs)")
+for ax in (ax_short, ax_long):
+    ax.set_aspect("equal"), ax.grid()
+    ax.set_xlim(-6, 36.5), ax.set_ylim(30, 46)
+cb = plt.colorbar(m, cax=fig.add_axes([0.94, 0.05, 0.015, 0.9]))

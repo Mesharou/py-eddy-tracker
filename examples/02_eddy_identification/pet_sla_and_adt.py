@@ -4,9 +4,11 @@ Eddy detection on SLA and ADT
 
 """
 from datetime import datetime
+
 from matplotlib import pyplot as plt
-from py_eddy_tracker.dataset.grid import RegularGridDataset
+
 from py_eddy_tracker import data
+from py_eddy_tracker.dataset.grid import RegularGridDataset
 
 
 # %%
@@ -29,7 +31,9 @@ def update_axes(ax, mappable=None):
 # Load Input grid, ADT will be used to detect eddies
 
 g = RegularGridDataset(
-    data.get_path("dt_med_allsat_phy_l4_20160515_20190101.nc"), "longitude", "latitude",
+    data.get_demo_path("dt_med_allsat_phy_l4_20160515_20190101.nc"),
+    "longitude",
+    "latitude",
 )
 g.add_uv("adt", "ugos", "vgos")
 g.add_uv("sla", "ugosa", "vgosa")
@@ -41,10 +45,14 @@ g.bessel_high_filter("sla", wavelength)
 date = datetime(2016, 5, 15)
 
 # %%
-kwargs_a_adt = dict(lw=0.5, label="Anticyclonic ADT", ref=-10, color="k")
-kwargs_c_adt = dict(lw=0.5, label="Cyclonic ADT", ref=-10, color="r")
-kwargs_a_sla = dict(lw=0.5, label="Anticyclonic SLA", ref=-10, color="g")
-kwargs_c_sla = dict(lw=0.5, label="Cyclonic SLA", ref=-10, color="b")
+kwargs_a_adt = dict(
+    lw=0.5, label="Anticyclonic ADT ({nb_obs} eddies)", ref=-10, color="k"
+)
+kwargs_c_adt = dict(lw=0.5, label="Cyclonic ADT ({nb_obs} eddies)", ref=-10, color="r")
+kwargs_a_sla = dict(
+    lw=0.5, label="Anticyclonic SLA ({nb_obs} eddies)", ref=-10, color="g"
+)
+kwargs_c_sla = dict(lw=0.5, label="Cyclonic SLA ({nb_obs} eddies)", ref=-10, color="b")
 
 # %%
 # Run algorithm of detection
@@ -133,8 +141,18 @@ for i, (label, field, factor, stop) in enumerate(
     ax.set_xlabel("Absolute Dynamic Topography")
     ax.set_ylabel("Sea Level Anomaly")
 
-    ax.plot(a_adt[field][i_a_adt] * factor, a_sla[field][i_a_sla] * factor, "r.", label='Anticyclonic')
-    ax.plot(c_adt[field][i_c_adt] * factor, c_sla[field][i_c_sla] * factor, "b.", label='Cyclonic')
+    ax.plot(
+        a_adt[field][i_a_adt] * factor,
+        a_sla[field][i_a_sla] * factor,
+        "r.",
+        label="Anticyclonic",
+    )
+    ax.plot(
+        c_adt[field][i_c_adt] * factor,
+        c_sla[field][i_c_sla] * factor,
+        "b.",
+        label="Cyclonic",
+    )
     ax.set_aspect("equal"), ax.grid()
     ax.plot((0, 1000), (0, 1000), "g")
     ax.set_xlim(0, stop), ax.set_ylim(0, stop)

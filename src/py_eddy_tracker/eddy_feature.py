@@ -4,22 +4,25 @@ Class to compute Amplitude and average speed profile
 """
 
 import logging
-from numpy import (
-    empty,
-    array,
-    concatenate,
-    ma,
-    zeros,
-    unique,
-    round,
-    ones,
-    int_,
-    digitize,
-)
+
+from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
-from matplotlib.cm import get_cmap
-from numba import njit, types as numba_types
+from numba import njit
+from numba import types as numba_types
+from numpy import (
+    array,
+    concatenate,
+    digitize,
+    empty,
+    int_,
+    ma,
+    ones,
+    round,
+    unique,
+    zeros,
+)
+
 from .poly import winding_number_poly
 
 logger = logging.getLogger("pet")
@@ -28,7 +31,7 @@ logger = logging.getLogger("pet")
 class Amplitude(object):
     """
     Class to calculate *amplitude* and counts of *local maxima/minima*
-    within a closed region of a sea level anomaly field.
+    within a closed region of a sea surface height field.
     """
 
     EPSILON = 1e-8
@@ -40,15 +43,38 @@ class Amplitude(object):
         "sla",
         "contour",
         "interval_min",
+        "interval_min_secondary",
         "amplitude",
         "mle",
     )
 
-    def __init__(self, contour, contour_height, data, interval, mle=1):
+    def __init__(
+        self,
+        contour,
+        contour_height,
+        data,
+        interval,
+        mle=1,
+        nb_step_min=2,
+        nb_step_to_be_mle=2,
+    ):
+        """
+        Create amplitude object
+
+        :param Contours contour:
+        :param float contour_height:
+        :param array data:
+        :param float interval:
+        :param int mle: maximum number of local maxima in contour
+        :param int nb_step_min: number of intervals to consider an eddy
+        :param int nb_step_to_be_mle: number of intervals to be considered as an another maxima
+        """
+
         # Height of the contour
         self.h_0 = contour_height
         # Step minimal to consider amplitude
-        self.interval_min = interval * 2
+        self.interval_min = interval * nb_step_min
+        self.interval_min_secondary = interval * nb_step_to_be_mle
         # Indices of all pixels in contour
         self.contour = contour
         # Link on original grid (local view) or copy if it's on bound
@@ -76,23 +102,24 @@ class Amplitude(object):
         self.nb_pixel = i_x.shape[0]
 
         # Only pixel in contour
+        # FIXME : change sla by ssh as the grid can be adt?
         self.sla = data[contour.pixels_index]
-        # Amplitude which will be provide
+        # Amplitude which will be provided
         self.amplitude = 0
         # Maximum local extrema accepted
         self.mle = mle
 
     def within_amplitude_limits(self):
-        """Need update
-        """
+        """Need update"""
         return self.interval_min <= self.amplitude
 
     def all_pixels_below_h0(self, level, grid_height='sla'):
         """
         Check CSS11 criterion 1: The SSH values of all of the pixels
-        are below a given SSH threshold for cyclonic eddies.
+        are below (above) a given SSH threshold for cyclonic (anticyclonic)
+        eddies.
         """
-        # In some case pixel value must be very near of contour bounds
+        # In some cases pixel value may be very close to the contour bounds
         if self.sla.mask.any() or ((self.sla.data - self.h_0) > self.EPSILON).any():
             return False
         else:
@@ -118,7 +145,8 @@ class Amplitude(object):
             else:
                 # Verify if several extrema are seriously below contour
                 nb_real_extrema = (
-                    (level - self.grid_extract.data[lmi_i, lmi_j]) >= self.interval_min
+                    (level - self.grid_extract.data[lmi_i, lmi_j])
+                    >= self.interval_min_secondary
                 ).sum()
                 
                 if grid_height!='ow':
@@ -149,6 +177,7 @@ class Amplitude(object):
                 self.mle,
                 -1,
             )
+            # After we use grid.data because index are in contour and we check before than no pixel are hide
             nb = len(lmi_i)
             if nb == 0:
                 logger.warning(
@@ -162,7 +191,8 @@ class Amplitude(object):
             else:
                 # Verify if several extrema are seriously above contour
                 nb_real_extrema = (
-                    (self.grid_extract.data[lmi_i, lmi_j] - level) >= self.interval_min
+                    (self.grid_extract.data[lmi_i, lmi_j] - level)
+                    >= self.interval_min_secondary
                 ).sum()
                 if nb_real_extrema > self.mle:
                     return False
@@ -267,10 +297,10 @@ class Contours(object):
 
     Attributes:
       contour:
-        A matplotlib contour object of high-pass filtered SLA
+        A matplotlib contour object of high-pass filtered SSH
 
       eddy:
-        A tracklist object holding the SLA data
+        A tracklist object holding the SSH data
 
       grd:
         A grid object
@@ -380,7 +410,7 @@ class Contours(object):
         fig = Figure()
         ax = fig.add_subplot(111)
         if wrap_x:
-            logger.debug("wrapping activate to compute contour")
+            logger.debug("wrapping activated to compute contour")
             x = concatenate((x, x[:1] + 360))
             z = ma.concatenate((z, z[:1]))
         logger.debug("X shape : %s", x.shape)
@@ -406,8 +436,8 @@ class Contours(object):
         closed_contours = 0
         # Count level and contour
         for i, collection in enumerate(self.contours.collections):
-            collection.get_nearest_path_bbox_contain_pt = lambda x, y, i=i: self.get_index_nearest_path_bbox_contain_pt(
-                i, x, y
+            collection.get_nearest_path_bbox_contain_pt = (
+                lambda x, y, i=i: self.get_index_nearest_path_bbox_contain_pt(i, x, y)
             )
             nb_level += 1
 
@@ -576,8 +606,8 @@ class Contours(object):
             Must be 'shape_error', 'x', 'y' or 'radius'.
             If define display_criterion is not use.
             bins argument must be define
-        :param array bins: bins use to colorize contour
-        :param str cmap: Name of cmap to use for field display
+        :param array bins: bins used to colorize contour
+        :param str cmap: Name of cmap for field display
         :param dict kwargs: look at :py:meth:`matplotlib.collections.LineCollection`
 
         .. minigallery:: py_eddy_tracker.Contours.display
@@ -626,7 +656,13 @@ class Contours(object):
             if not overide_color:
                 ax.add_collection(LineCollection(paths, **local_kwargs))
         if display_criterion:
-            colors = {0: "g", 1: "r", 2: "b", 3: "k", 4: "y"}
+            colors = {
+                0: "limegreen",
+                1: "red",
+                2: "mediumblue",
+                3: "black",
+                4: "gold",
+            }
             for k, v in paths.items():
                 local_kwargs = kwargs.copy()
                 local_kwargs.pop("label", None)
@@ -656,7 +692,7 @@ class Contours(object):
             ax.autoscale_view()
 
     def label_contour_unused_which_contain_eddies(self, eddies):
-        """Select contour which contain several eddies"""
+        """Select contour containing several eddies"""
         if eddies.sign_type == 1:
             # anticyclonic
             sl = slice(None, -1)
@@ -708,8 +744,7 @@ def index_from_nearest_path_with_pt_in_bbox_(
     xpt,
     ypt,
 ):
-    """Get index from nearest path in edge bbox contain pt
-    """
+    """Get index from nearest path in edge bbox contain pt"""
     # Nb contour in level
     if nb_c_per_l[level_index] == 0:
         return -1

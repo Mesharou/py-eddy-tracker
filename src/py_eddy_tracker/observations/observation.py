@@ -3,61 +3,72 @@
 Base class to manage eddy observation
 """
 import logging
-import zarr
-from numpy import (
-    zeros,
-    where,
-    unique,
-    ma,
-    cos,
-    radians,
-    isnan,
-    ones,
-    ndarray,
-    floor,
-    array,
-    empty,
-    absolute,
-    concatenate,
-    float64,
-    ceil,
-    arange,
-    histogram2d,
-    linspace,
-    sin,
-    histogram,
-    digitize,
-)
-from netCDF4 import Dataset
 from datetime import datetime
-from numba import njit, types as numba_types
-from Polygon import Polygon
+from io import BufferedReader, BytesIO
+from tarfile import ExFileObject
+from tokenize import TokenError
+
+import zarr
+from matplotlib.cm import get_cmap
+from matplotlib.collections import PolyCollection
+from matplotlib.colors import Normalize
+from netCDF4 import Dataset
+from numba import njit
+from numba import types as numba_types
+from numpy import (
+    absolute,
+    arange,
+    array,
+    array_equal,
+    ceil,
+    concatenate,
+    cos,
+    digitize,
+    empty,
+    errstate,
+    floor,
+    histogram,
+    histogram2d,
+    in1d,
+    isnan,
+    linspace,
+    ma,
+    nan,
+    ndarray,
+    ones,
+    percentile,
+    radians,
+    sin,
+    unique,
+    where,
+    zeros,
+)
 from pint import UnitRegistry
 from pint.errors import UndefinedUnitError
-from tokenize import TokenError
-from tarfile import ExFileObject
-from matplotlib.path import Path as BasePath
-from matplotlib.collections import PolyCollection
-from matplotlib.cm import get_cmap
-from matplotlib.colors import Normalize
+from Polygon import Polygon
+
 from .. import VAR_DESCR, VAR_DESCR_inv, __version__
 from ..generic import (
-    distance_grid,
+    bbox_indice_regular,
+    build_index,
     distance,
+    distance_grid,
     flatten_line_matrix,
-    wrap_longitude,
+    hist_numba,
     local_to_coordinates,
     reverse_index,
-    bbox_indice_regular,
-    hist_numba,
+    wrap_longitude,
 )
 from ..poly import (
     bbox_intersection,
-    vertice_overlap,
-    create_vertice,
     close_center,
+    convexs,
+    create_vertice,
     get_pixel_in_regular,
-    winding_number_poly,
+    insidepoly,
+    poly_indexs,
+    reduce_size,
+    vertice_overlap,
 )
 
 logger = logging.getLogger("pet")
@@ -66,7 +77,7 @@ logger = logging.getLogger("pet")
 @njit(cache=True, fastmath=True)
 def shifted_ellipsoid_degrees_mask2(lon0, lat0, lon1, lat1, minor=1.5, major=1.5):
     """
-    work only if major is an array but faster * 6
+    Work only if major is an array but faster * 6
     """
     # c = (major ** 2 - minor ** 2) ** .5 + major
     c = major
@@ -76,7 +87,7 @@ def shifted_ellipsoid_degrees_mask2(lon0, lat0, lon1, lat1, minor=1.5, major=1.5
     # Focal
     f_right = lon0
     f_left = f_right - (c - minor)
-    # Ellips center
+    # Ellipse center
     x_c = (f_left + f_right) * 0.5
 
     nb_0, nb_1 = lat0.shape[0], lat1.shape[0]
@@ -99,11 +110,31 @@ def shifted_ellipsoid_degrees_mask2(lon0, lat0, lon1, lat1, minor=1.5, major=1.5
     return m
 
 
+class Table(object):
+    def __init__(self, values):
+        self.values = values
+
+    def _repr_html_(self):
+        rows = list()
+        if isinstance(self.values, ndarray):
+            row = "\n".join([f"<td>{v}</td >" for v in self.values.dtype.names])
+            rows.append(f"<tr>{row}</tr>")
+        for row in self.values:
+            row = "\n".join([f"<td>{v}</td >" for v in row])
+            rows.append(f"<tr>{row}</tr>")
+        rows = "\n".join(rows)
+        return (
+            f'<font size="2">'
+            f'<table class="docutils align-default">'
+            f"{rows}"
+            f"</table>"
+            f"</font>"
+        )
+
+
 class EddiesObservations(object):
     """
-    Class to hold eddy properties *amplitude* and counts of
-    *local maxima/minima* within a closed region of a sea level anomaly field.
-
+    Class to store eddy observations.
     """
 
     __slots__ = (
@@ -114,6 +145,7 @@ class EddiesObservations(object):
         "observations",
         "sign_type",
         "raw_data",
+        "period_",
     )
 
     ELEMENTS = [
@@ -136,6 +168,27 @@ class EddiesObservations(object):
         "height_inner_contour",
     ]
 
+    COLORS = [
+        "sienna",
+        "red",
+        "darkorange",
+        "gold",
+        "palegreen",
+        "limegreen",
+        "forestgreen",
+        "mediumblue",
+        "dodgerblue",
+        "lightskyblue",
+        "violet",
+        "blueviolet",
+        "darkmagenta",
+        "darkgrey",
+        "dimgrey",
+        "steelblue",
+    ]
+
+    NB_COLORS = len(COLORS)
+
     def __init__(
         self,
         size=0,
@@ -145,6 +198,7 @@ class EddiesObservations(object):
         only_variables=None,
         raw_data=False,
     ):
+        self.period_ = None
         self.only_variables = only_variables
         self.raw_data = raw_data
         self.track_extra_variables = (
@@ -159,24 +213,19 @@ class EddiesObservations(object):
         self.sign_type = None
 
     @property
-    def longitude(self):
-        return self.observations["lon"]
-
-    @property
-    def latitude(self):
-        return self.observations["lat"]
-
-    @property
-    def time(self):
-        return self.observations["time"]
-
-    @property
     def tracks(self):
-        return self.observations["track"]
+        return self.track
 
-    @property
-    def observation_number(self):
-        return self.observations["n"]
+    def __eq__(self, other):
+        if self.sign_type != other.sign_type:
+            return False
+        if self.dtype != other.dtype:
+            return False
+        return array_equal(self.obs, other.obs)
+
+    def get_color(self, i):
+        """Return colors as a cyclic list"""
+        return self.COLORS[i % self.NB_COLORS]
 
     @property
     def sign_legend(self):
@@ -202,35 +251,59 @@ class EddiesObservations(object):
         infos = self.get_infos()
         return f"""<b>{infos['nb_obs']} observations from {infos['t0']} to {infos['t1']} </b>"""
 
+    def parse_varname(self, name):
+        return self[name] if isinstance(name, str) else name
+
     def hist(self, varname, x, bins, percent=False, mean=False, nb=False):
+        """Build histograms.
+
+        :param str,array varname: variable to use to compute stat
+        :param str,array x: variable to use to know in which bins
+        :param array bins:
+        :param bool percent: normalized by sum of all bins
+        :param bool mean: compute mean by bins
+        :param bool nb: only count by bins
+        :return: value by bins
+        :rtype: array
         """
-            :param str varname: variable to use to compute stat
-            :param str x: variable to use to know in which bins
-            :param array bins:
-            :param bool percent: normalize by sum of all bins
-            :param bool mean: compute mean by bins
-            :param nb mean: only count by bins
-            :return: value by bins
-            :rtype: array
-            """
+        x = self.parse_varname(x)
         if nb:
-            v = hist_numba(self[x], bins=bins)[0]
+            v = hist_numba(x, bins=bins)[0]
         else:
-            v = histogram(self[x], bins=bins, weights=self[varname])[0]
+            v = histogram(x, bins=bins, weights=self.parse_varname(varname))[0]
         if percent:
             v = v.astype("f4") / v.sum() * 100
         elif mean:
-            v /= hist_numba(self[x], bins=bins)[0]
+            v /= hist_numba(x, bins=bins)[0]
         return v
 
     @staticmethod
     def box_display(value):
-        """Return value evenly spaced with few numbers"""
+        """Return values evenly spaced with few numbers"""
         return "".join([f"{v_:10.2f}" for v_ in value])
+
+    def field_table(self):
+        """
+        Produce description table of the fields available in this object
+        """
+        rows = [("Name (Unit)", "Long name", "Scale factor", "Offset")]
+        names = list(self.obs.dtype.names)
+        names.sort()
+        for field in names:
+            infos = VAR_DESCR[field]
+            rows.append(
+                (
+                    f"{infos.get('nc_name', field)} ({infos['nc_attr'].get('units', '')})",
+                    infos["nc_attr"].get("long_name", "").capitalize(),
+                    infos.get("scale_factor", ""),
+                    infos.get("add_offset", ""),
+                )
+            )
+        return Table(rows)
 
     def __repr__(self):
         """
-        return general informations on dataset as a string
+        Return general informations on dataset as strings.
 
         :return: informations on datasets
         :rtype: str
@@ -243,8 +316,8 @@ class EddiesObservations(object):
         nb_obs = self.observations.shape[0]
 
         return f"""    | {nb_obs} observations from {t0} to {t1} ({period} days, ~{nb_obs / period:.0f} obs/day)
-    |   Speed area      : {self["speed_area"].sum() / period / 1e12:.2f} Mkm²/day
-    |   Effective area  : {self["effective_area"].sum() / period / 1e12:.2f} Mkm²/day
+    |   Speed area      : {self.speed_area.sum() / period / 1e12:.2f} Mkm²/day
+    |   Effective area  : {self.effective_area.sum() / period / 1e12:.2f} Mkm²/day
     ----Distribution in Amplitude:
     |   Amplitude bounds (cm)  {self.box_display(bins_amplitude)}
     |   Percent of eddies         : {
@@ -265,10 +338,41 @@ class EddiesObservations(object):
         Mean effective radius (km): {self.box_display(self.hist('radius_e', 'lat', bins_lat, mean=True) / 1000.)}
         Mean amplitude (cm)       : {self.box_display(self.hist('amplitude', 'lat', bins_lat, mean=True) * 100.)}"""
 
-    def __getitem__(self, attr):
+    def __dir__(self):
+        """Provide method name lookup and completion."""
+        base = set(dir(type(self)))
+        intern_name = set(self.elements)
+        extern_name = set([VAR_DESCR[k]["nc_name"] for k in intern_name])
+        # Must be check in init not here
+        if base & intern_name:
+            logger.warning(
+                "Some variable name have a common name with class attrs: %s",
+                base & intern_name,
+            )
+        if base & extern_name:
+            logger.warning(
+                "Some variable name have a common name with class attrs: %s",
+                base & extern_name,
+            )
+        return sorted(base.union(intern_name).union(extern_name))
+
+    def __getitem__(self, attr: str):
         if attr in self.elements:
-            return self.observations[attr]
+            return self.obs[attr]
+        elif attr in VAR_DESCR_inv:
+            return self.obs[VAR_DESCR_inv[attr]]
+        elif attr in ("lifetime", "age"):
+            return getattr(self, attr)
         raise KeyError("%s unknown" % attr)
+
+    def __getattr__(self, attr):
+        if attr in self.elements:
+            return self.obs[attr]
+        elif attr in VAR_DESCR_inv:
+            return self.obs[VAR_DESCR_inv[attr]]
+        raise AttributeError(
+            "{!r} object has no attribute {!r}".format(type(self).__name__, attr)
+        )
 
     @classmethod
     def needed_variable(cls):
@@ -280,9 +384,32 @@ class EddiesObservations(object):
             if candidate in handler.dimensions.keys():
                 return candidate
 
+    def remove_fields(self, *fields):
+        """
+        Copy with fields listed remove
+        """
+        nb_obs = self.obs.shape[0]
+        fields = set(fields)
+        only_variables = set(self.obs.dtype.names) - fields
+        track_extra_variables = set(self.track_extra_variables) - fields
+        array_variables = set(self.array_variables) - fields
+        new = self.__class__(
+            size=nb_obs,
+            track_extra_variables=track_extra_variables,
+            track_array_variables=self.track_array_variables,
+            array_variables=array_variables,
+            only_variables=only_variables,
+            raw_data=self.raw_data,
+        )
+        new.sign_type = self.sign_type
+        for name in new.obs.dtype.names:
+            logger.debug("Copy of field %s ...", name)
+            new.obs[name] = self.obs[name]
+        return new
+
     def add_fields(self, fields=list(), array_fields=list()):
         """
-        Add a new field
+        Add a new field.
         """
         nb_obs = self.obs.shape[0]
         new = self.__class__(
@@ -298,20 +425,19 @@ class EddiesObservations(object):
             raw_data=self.raw_data,
         )
         new.sign_type = self.sign_type
-        for field in self.obs.dtype.descr:
-            logger.debug("Copy of field %s ...", field)
-            var = field[0]
-            new.obs[var] = self.obs[var]
+        for name in self.obs.dtype.names:
+            logger.debug("Copy of field %s ...", name)
+            new.obs[name] = self.obs[name]
         return new
 
     def add_rotation_type(self):
         new = self.add_fields(("type_cyc",))
-        new.observations["type_cyc"] = self.sign_type
+        new.type_cyc[:] = self.sign_type
         return new
 
-    def circle_contour(self):
+    def circle_contour(self, only_virtual=False, factor=1):
         """
-        Set contour like a circle with radius and center data
+        Set contours as circles from radius and center data.
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.circle_contour
         """
@@ -320,22 +446,23 @@ class EddiesObservations(object):
         radius_s = "contour_lon_s" in self.obs.dtype.names
         radius_e = "contour_lon_e" in self.obs.dtype.names
         for i, obs in enumerate(self):
+            if only_virtual and not obs["virtual"]:
+                continue
             x, y = obs["lon"], obs["lat"]
             if radius_s:
-                r_s = obs["radius_s"]
+                r_s = obs["radius_s"] * factor
                 obs["contour_lon_s"], obs["contour_lat_s"] = local_to_coordinates(
                     x_norm * r_s, y_norm * r_s, x, y
                 )
             if radius_e:
-                r_e = obs["radius_e"]
+                r_e = obs["radius_e"] * factor
                 obs["contour_lon_e"], obs["contour_lat_e"] = local_to_coordinates(
                     x_norm * r_e, y_norm * r_e, x, y
                 )
 
     @property
     def dtype(self):
-        """Return dtype to build numpy array
-        """
+        """Return dtype to build numpy array."""
         dtype = list()
         for elt in self.elements:
             data_type = (
@@ -351,8 +478,7 @@ class EddiesObservations(object):
 
     @property
     def elements(self):
-        """Return all variable name
-        """
+        """Return all the names of the variables."""
         elements = [i for i in self.ELEMENTS]
         if self.track_array_variables > 0:
             elements += self.array_variables
@@ -364,8 +490,7 @@ class EddiesObservations(object):
         return list(set(elements))
 
     def coherence(self, other):
-        """Check coherence between two dataset
-        """
+        """Check coherence between two datasets."""
         test = self.track_extra_variables == other.track_extra_variables
         test *= self.track_array_variables == other.track_array_variables
         test *= self.array_variables == other.array_variables
@@ -390,8 +515,7 @@ class EddiesObservations(object):
         return eddies
 
     def merge(self, other):
-        """Merge two dataset
-        """
+        """Merge two datasets."""
         nb_obs_self = len(self)
         nb_obs = nb_obs_self + len(other)
         eddies = self.new_like(self, nb_obs)
@@ -402,8 +526,8 @@ class EddiesObservations(object):
             if key in other_keys:
                 eddies.obs[key][nb_obs_self:] = other.obs[key][:]
         if "track" in other_keys and "track" in self_keys:
-            last_track = eddies.obs["track"][nb_obs_self - 1] + 1
-            eddies.obs["track"][nb_obs_self:] += last_track
+            last_track = eddies.track[nb_obs_self - 1] + 1
+            eddies.track[nb_obs_self:] += last_track
         eddies.sign_type = self.sign_type
         return eddies
 
@@ -412,8 +536,7 @@ class EddiesObservations(object):
 
     @property
     def obs(self):
-        """return an array observations
-        """
+        """Return observations."""
         return self.observations
 
     def __len__(self):
@@ -425,39 +548,58 @@ class EddiesObservations(object):
 
     def iter_on(self, xname, bins=None):
         """
-        Yield observation group for each bins
+        Yield observation group for each bin.
 
-        :param str varname:
-        :param array bins: bounds og each bins ,
-        :return: Group observations
-        :rtype: self.__class__
+        :param str,array xname:
+        :param array bins: bounds of each bin ,
+        :return: index or mask, bound low, bound up
+
+        .. minigallery:: py_eddy_tracker.EddiesObservations.iter_on
         """
-        x = self[xname]
+        x = self[xname] if isinstance(xname, str) else xname
         d = x[1:] - x[:-1]
         if bins is None:
             bins = arange(x.min(), x.max() + 2)
+        elif not isinstance(bins, ndarray):
+            bins = array(bins)
         nb_bins = len(bins) - 1
-        i = digitize(x, bins) - 1
+
         # Not monotonous
         if (d < 0).any():
-            for i_ in unique(i):
-                if i_ == -1 or i_ == nb_bins:
+            # If bins cover a small part of value
+            test, translate, x = iter_mode_reduce(x, bins)
+            # convert value in bins number
+            i = numba_digitize(x, bins) - 1
+            # Order by bins
+            i_sort = i.argsort()
+            # If in reduced mode we will translate i_sort in full array index
+            i_sort_ = translate[i_sort] if test else i_sort
+            # Bound for each bins in sorting view
+            i0, i1, _ = build_index(i[i_sort])
+            m = ~(i0 == i1)
+            i0, i1 = i0[m], i1[m]
+            for i0_, i1_ in zip(i0, i1):
+                i_bins = i[i_sort[i0_]]
+                if i_bins == -1 or i_bins == nb_bins:
                     continue
-                index = where(i_ == i)[0]
-                yield index, bins[i_], bins[i_ + 1]
+                yield i_sort_[i0_:i1_], bins[i_bins], bins[i_bins + 1]
         else:
-            # TODO : need improvement
-            for i_ in unique(i):
-                if i_ == -1 or i_ == nb_bins:
-                    continue
-                index = where(i_ == i)[0]
-                yield slice(index[0], index[-1] + 1), bins[i_], bins[i_ + 1]
+            i = numba_digitize(x, bins) - 1
+            i0, i1, _ = build_index(i)
+            m = ~(i0 == i1)
+            i0, i1 = i0[m], i1[m]
+            for i0_, i1_ in zip(i0, i1):
+                i_bins = i[i0_]
+                yield slice(i0_, i1_), bins[i_bins], bins[i_bins + 1]
 
     def align_on(self, other, var_name="time", **kwargs):
-        iter_self, iter_other = (
-            self.iter_on(var_name, **kwargs),
-            other.iter_on(var_name, **kwargs),
-        )
+        """
+        Align the time indices of two datasets.
+
+        .. minigallery:: py_eddy_tracker.EddiesObservations.align_on
+        """
+        iter_self = self.iter_on(var_name, **kwargs)
+        iter_other = other.iter_on(var_name, **kwargs)
         indexs_other, b0_other, b1_other = iter_other.__next__()
         for indexs_self, b0_self, b1_self in iter_self:
             if b0_self > b0_other:
@@ -471,8 +613,7 @@ class EddiesObservations(object):
             yield indexs_self, indexs_other, b0_self, b1_self
 
     def insert_observations(self, other, index):
-        """Insert other obs in self at the index
-        """
+        """Insert other obs in self at the given index."""
         if not self.coherence(other):
             raise Exception("Observations with no coherence")
         insert_size = len(other.obs)
@@ -493,23 +634,30 @@ class EddiesObservations(object):
         return self
 
     def append(self, other):
-        """Merge
-        """
+        """Merge."""
         return self + other
 
     def __add__(self, other):
         return self.insert_observations(other, -1)
 
     def distance(self, other):
-        """ Use haversine distance for distance matrix between every self and
-        other eddies"""
-        return distance_grid(
-            self.obs["lon"], self.obs["lat"], other.obs["lon"], other.obs["lat"]
-        )
+        """Use haversine distance for distance matrix between every self and
+        other eddies."""
+        return distance_grid(self.lon, self.lat, other.lon, other.lat)
 
-    @staticmethod
-    def new_like(eddies, new_size):
-        return eddies.__class__(
+    def __copy__(self):
+        eddies = self.new_like(self, len(self))
+        for k in self.obs.dtype.names:
+            eddies[k][:] = self[k][:]
+        eddies.sign_type = self.sign_type
+        return eddies
+
+    def copy(self):
+        return self.__copy__()
+
+    @classmethod
+    def new_like(cls, eddies, new_size: int):
+        return cls(
             new_size,
             track_extra_variables=eddies.track_extra_variables,
             track_array_variables=eddies.track_array_variables,
@@ -519,8 +667,7 @@ class EddiesObservations(object):
         )
 
     def index(self, index, reverse=False):
-        """Return obs from self at the index
-        """
+        """Return obs from self at the index."""
         if reverse:
             index = reverse_index(index, len(self))
         size = 1
@@ -535,7 +682,10 @@ class EddiesObservations(object):
 
     @staticmethod
     def zarr_dimension(filename):
-        h = zarr.open(filename)
+        if isinstance(filename, zarr.storage.MutableMapping):
+            h = filename
+        else:
+            h = zarr.open(filename)
         dims = list()
         for varname in h:
             dims.extend(list(getattr(h, varname).shape))
@@ -543,35 +693,92 @@ class EddiesObservations(object):
 
     @classmethod
     def load_file(cls, filename, **kwargs):
+        """
+        Load the netcdf or the zarr file.
+
+        Load only latitude and longitude on the first 300 obs :
+
+        .. code-block:: python
+
+            kwargs_latlon_300 = dict(
+                include_vars=[
+                    "longitude",
+                    "latitude",
+                ],
+                indexs=dict(obs=slice(0, 300)),
+            )
+            small_dataset = TrackEddiesObservations.load_file(
+                filename, **kwargs_latlon_300
+            )
+
+        For `**kwargs` look at :py:meth:`load_from_zarr` or :py:meth:`load_from_netcdf`
+        """
         filename_ = (
             filename.filename if isinstance(filename, ExFileObject) else filename
         )
-        end = b".zarr" if isinstance(filename_, bytes) else ".zarr"
-        if filename_.endswith(end):
+        if isinstance(filename, zarr.storage.MutableMapping):
+            return cls.load_from_zarr(filename, **kwargs)
+        if isinstance(filename, (bytes, str)):
+            end = b".zarr" if isinstance(filename_, bytes) else ".zarr"
+            zarr_file = filename_.endswith(end)
+        else:
+            zarr_file = False
+        if zarr_file:
             return cls.load_from_zarr(filename, **kwargs)
         else:
             return cls.load_from_netcdf(filename, **kwargs)
 
     @classmethod
     def load_from_zarr(
-        cls, filename, raw_data=False, remove_vars=None, include_vars=None
+        cls,
+        filename,
+        raw_data=False,
+        remove_vars=None,
+        include_vars=None,
+        indexs=None,
+        buffer_size=5000000,
+        **class_kwargs,
     ):
-        # FIXME must be investigate, in zarr no dimensions name (or could be add in attr)
-        array_dim = 50
-        BLOC = 5000000
-        if not isinstance(filename, str):
-            filename = filename.astype(str)
-        h_zarr = zarr.open(filename)
-        var_list = list(h_zarr.keys())
-        if include_vars is not None:
-            var_list = [i for i in var_list if i in include_vars]
-        elif remove_vars is not None:
-            var_list = [i for i in var_list if i not in remove_vars]
+        """Load data from zarr.
+
+        :param str,store filename: path or store to load data
+        :param bool raw_data: If true load data without scale_factor and add_offset
+        :param None,list(str) remove_vars: List of variable name that will be not loaded
+        :param None,list(str) include_vars: If defined only this variable will be loaded
+        :param None,dict indexs: Indexes to load only a slice of data
+        :param int buffer_size: Size of buffer used to load zarr data
+        :param class_kwargs: argument to set up observations class
+        :return: Obsevations selected
+        :return type: class
+        """
+        # FIXME
+        array_dim = -1
+        if isinstance(filename, zarr.storage.MutableMapping):
+            h_zarr = filename
+        else:
+            if not isinstance(filename, str):
+                filename = filename.astype(str)
+            h_zarr = zarr.open(filename)
+        var_list = cls.build_var_list(list(h_zarr.keys()), remove_vars, include_vars)
 
         nb_obs = getattr(h_zarr, var_list[0]).shape[0]
+        dims = list(cls.zarr_dimension(filename))
+        if len(dims) == 2 and nb_obs in dims:
+            # FIXME must be investigated, in zarr no dimensions name (or could be add in attr)
+            array_dim = dims[1] if nb_obs == dims[0] else dims[0]
+        if indexs is not None and "obs" in indexs:
+            sl = indexs["obs"]
+            sl = slice(sl.start, min(sl.stop, nb_obs))
+            if sl.stop is not None:
+                nb_obs = sl.stop
+            if sl.start is not None:
+                nb_obs -= sl.start
+            if sl.step is not None:
+                indexs["obs"] = slice(sl.start, sl.stop)
+                logger.warning("step of slice won't be use")
         logger.debug("%d observations will be load", nb_obs)
         kwargs = dict()
-        dims = cls.zarr_dimension(filename)
+
         if array_dim in dims:
             kwargs["track_array_variables"] = array_dim
             kwargs["array_variables"] = list()
@@ -589,89 +796,118 @@ class EddiesObservations(object):
         kwargs["only_variables"] = (
             None if include_vars is None else [VAR_DESCR_inv[i] for i in include_vars]
         )
+        kwargs.update(class_kwargs)
         eddies = cls(size=nb_obs, **kwargs)
         for variable in var_list:
             var_inv = VAR_DESCR_inv[variable]
             logger.debug("%s will be loaded", variable)
             # find unit factor
-            factor = 1
             input_unit = h_zarr[variable].attrs.get("unit", None)
             if input_unit is None:
                 input_unit = h_zarr[variable].attrs.get("units", None)
             output_unit = VAR_DESCR[var_inv]["nc_attr"].get("units", None)
-            if (
-                output_unit is not None
-                and input_unit is not None
-                and output_unit != input_unit
-            ):
-                units = UnitRegistry()
-                try:
-                    input_unit = units.parse_expression(
-                        input_unit, case_sensitive=False
-                    )
-                    output_unit = units.parse_expression(
-                        output_unit, case_sensitive=False
-                    )
-                except UndefinedUnitError:
-                    input_unit = None
-                except TokenError:
-                    input_unit = None
-                if input_unit is not None:
-                    factor = input_unit.to(output_unit).to_tuple()[0]
-                    # If we are able to find a conversion
-                    if factor != 1:
-                        logger.info(
-                            "%s will be multiply by %f to take care of units(%s->%s)",
-                            variable,
-                            factor,
-                            input_unit,
-                            output_unit,
-                        )
-            nb = h_zarr[variable].shape[0]
-
+            factor = cls.compare_units(input_unit, output_unit, variable)
+            sl_obs = slice(None) if indexs is None else indexs.get("obs", slice(None))
             scale_factor = VAR_DESCR[var_inv].get("scale_factor", None)
             add_offset = VAR_DESCR[var_inv].get("add_offset", None)
-            for i in range(0, nb, BLOC):
-                sl = slice(i, i + BLOC)
-                data = h_zarr[variable][sl]
-                if factor != 1:
-                    data *= factor
-                if raw_data:
-                    if add_offset is not None:
-                        data -= add_offset
-                    if scale_factor is not None:
-                        data /= scale_factor
-                eddies.obs[var_inv][sl] = data
+            cls.copy_data_to_zarr(
+                h_zarr[variable],
+                eddies.obs[var_inv],
+                sl_obs,
+                buffer_size,
+                factor,
+                raw_data,
+                scale_factor,
+                add_offset,
+            )
 
-        eddies.sign_type = h_zarr.attrs.get("rotation_type", 0)
+        eddies.sign_type = int(h_zarr.attrs.get("rotation_type", 0))
         if eddies.sign_type == 0:
             logger.debug("File come from another algorithm of identification")
             eddies.sign_type = -1
         return eddies
 
+    @staticmethod
+    def copy_data_to_zarr(
+        handler_zarr,
+        handler_eddies,
+        sl_obs,
+        buffer_size,
+        factor,
+        raw_data,
+        scale_factor,
+        add_offset,
+    ):
+        """
+        Copy with buffer for zarr.
+
+        Zarr need to get real value, and size could be huge, so we use a buffer to manage memory
+        :param zarr_dataset handler_zarr:
+        :param array handler_eddies:
+        :param slice zarr_dataset sl_obs:
+        :param int buffer_size:
+        :param float factor:
+        :param bool raw_data:
+        :param None,float scale_factor:
+        :param None,float add_offset:
+        """
+        i_start, i_stop = sl_obs.start, sl_obs.stop
+        if i_start is None:
+            i_start = 0
+        if i_stop is None:
+            i_stop = handler_zarr.shape[0]
+        for i in range(i_start, i_stop, buffer_size):
+            sl_in = slice(i, min(i + buffer_size, i_stop))
+            data = handler_zarr[sl_in]
+            if factor != 1:
+                data *= factor
+            if raw_data:
+                if add_offset is not None:
+                    data -= add_offset
+                if scale_factor is not None:
+                    data /= scale_factor
+            sl_out = slice(i - i_start, i - i_start + buffer_size)
+            handler_eddies[sl_out] = data
+
     @classmethod
     def load_from_netcdf(
-        cls, filename, raw_data=False, remove_vars=None, include_vars=None, indexs=None
+        cls,
+        filename,
+        raw_data=False,
+        remove_vars=None,
+        include_vars=None,
+        indexs=None,
+        **class_kwargs,
     ):
+        """Load data from netcdf.
+
+        :param str,ExFileObject filename: path or handler to load data
+        :param bool raw_data: If true load data without apply scale_factor and add_offset
+        :param None,list(str) remove_vars: List of variable name which will be not loaded
+        :param None,list(str) include_vars: If defined only this variable will be loaded
+        :param None,dict indexs: Indexes to load only a slice of data
+        :param class_kwargs: argument to set up observations class
+        :return: Obsevations selected
+        :return type: class
+        """
         array_dim = "NbSample"
         if isinstance(filename, bytes):
             filename = filename.astype(str)
-        if isinstance(filename, ExFileObject):
+        if isinstance(filename, (ExFileObject, BufferedReader, BytesIO)):
             filename.seek(0)
             args, kwargs = ("in-mem-file",), dict(memory=filename.read())
         else:
             args, kwargs = (filename,), dict()
         with Dataset(*args, **kwargs) as h_nc:
-            var_list = list(h_nc.variables.keys())
-            if include_vars is not None:
-                var_list = [i for i in var_list if i in include_vars]
-            elif remove_vars is not None:
-                var_list = [i for i in var_list if i not in remove_vars]
+            var_list = cls.build_var_list(
+                list(h_nc.variables.keys()), remove_vars, include_vars
+            )
 
             obs_dim = cls.obs_dimension(h_nc)
             nb_obs = len(h_nc.dimensions[obs_dim])
             if indexs is not None and obs_dim in indexs:
                 sl = indexs[obs_dim]
+                sl = slice(sl.start, min(sl.stop, nb_obs))
                 if sl.stop is not None:
                     nb_obs = sl.stop
                 if sl.start is not None:
@@ -700,6 +936,7 @@ class EddiesObservations(object):
                 if include_vars is None
                 else [VAR_DESCR_inv[i] for i in include_vars]
             )
+            kwargs.update(class_kwargs)
             eddies = cls(size=nb_obs, **kwargs)
             for variable in var_list:
                 var_inv = VAR_DESCR_inv[variable]
@@ -717,34 +954,7 @@ class EddiesObservations(object):
                     if input_unit is None:
                         input_unit = getattr(h_nc.variables[variable], "units", None)
                     output_unit = VAR_DESCR[var_inv]["nc_attr"].get("units", None)
-                    if (
-                        output_unit is not None
-                        and input_unit is not None
-                        and output_unit != input_unit
-                    ):
-                        units = UnitRegistry()
-                        try:
-                            input_unit = units.parse_expression(
-                                input_unit, case_sensitive=False
-                            )
-                            output_unit = units.parse_expression(
-                                output_unit, case_sensitive=False
-                            )
-                        except UndefinedUnitError:
-                            input_unit = None
-                        except TokenError:
-                            input_unit = None
-                        if input_unit is not None:
-                            factor = input_unit.to(output_unit).to_tuple()[0]
-                            # If we are able to find a conversion
-                            if factor != 1:
-                                logger.info(
-                                    "%s will be multiply by %f to take care of units(%s->%s)",
-                                    variable,
-                                    factor,
-                                    input_unit,
-                                    output_unit,
-                                )
+                    factor = cls.compare_units(input_unit, output_unit, variable)
                 if indexs is None:
                     indexs = dict()
                 var_sl = [
@@ -771,6 +981,38 @@ class EddiesObservations(object):
                 eddies.sign_type = -1
 
         return eddies
+
+    @staticmethod
+    def build_var_list(var_list, remove_vars, include_vars):
+        if include_vars is not None:
+            var_list = [i for i in var_list if i in include_vars]
+        elif remove_vars is not None:
+            var_list = [i for i in var_list if i not in remove_vars]
+        return var_list
+
+    @staticmethod
+    def compare_units(input_unit, output_unit, name):
+        if output_unit is None or input_unit is None or output_unit == input_unit:
+            return 1
+        units = UnitRegistry()
+        try:
+            input_unit = units.parse_expression(input_unit, case_sensitive=False)
+            output_unit = units.parse_expression(output_unit, case_sensitive=False)
+        except UndefinedUnitError:
+            input_unit = None
+        except TokenError:
+            input_unit = None
+        if input_unit is not None:
+            factor = input_unit.to(output_unit).to_tuple()[0]
+            # If we are able to find a conversion
+            if factor != 1:
+                logger.info(
+                    "%s will be multiply by %f to take care of units(%s->%s)",
+                    name,
+                    factor,
+                    input_unit,
+                    output_unit,
+                )
 
     @classmethod
     def from_zarr(cls, handler):
@@ -812,7 +1054,7 @@ class EddiesObservations(object):
         self, previous_obs, current_obs, obs_to_extend, dead_track, nb_next, model
     ):
         """
-        Filled virtual obs (C)
+        Fill virtual obs (C).
 
         :param previous_obs: previous obs from current (A)
         :param current_obs: previous obs from virtual (B)
@@ -870,44 +1112,70 @@ class EddiesObservations(object):
             labels = [VAR_DESCR[label]["nc_name"] for label in labels]
         return labels
 
-    def match(self, other, method="overlap", intern=False, cmin=0, **kwargs):
-        """return index and score compute with area
+    def match(
+        self,
+        other,
+        i_self=None,
+        i_other=None,
+        method="overlap",
+        intern=False,
+        cmin=0,
+        **kwargs,
+    ):
+        """Return index and score computed on the effective contour.
 
         :param EddiesObservations other: Observations to compare
+        :param array[bool,int],None i_self:
+            Index or mask to subset observations, it could avoid to build a specific dataset.
+        :param array[bool,int],None i_other:
+            Index or mask to subset observations, it could avoid to build a specific dataset.
         :param str method:
-            if method is "overlap" method will use contour to compute score,
-            if method is "circle" method will apply a formula of circle overlap
-        :param bool intern: if True, speed contour will be used
-        :param float cmin: 0 < cmin < 1, return only couple above cmin
+            - "overlap": the score is computed with contours;
+            - "circle": circles are computed and used for score (TODO)
+        :param bool intern: if True, speed contour is used (default = effective contour)
+        :param float cmin: 0 < cmin < 1, return only couples with score >= cmin
         :param dict kwargs: look at :py:meth:`vertice_overlap`
-        :return: return index of couple in self and other and cost value
+        :return: return the indices of the eddies in self coupled with eddies in
+            other and their associated score
         :rtype: (array(int), array(int), array(float))
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.match
         """
         x_name, y_name = self.intern(intern)
+        if i_self is None:
+            i_self = slice(None)
+        if i_other is None:
+            i_other = slice(None)
         if method == "overlap":
-            i, j = bbox_intersection(
-                self[x_name], self[y_name], other[x_name], other[y_name]
-            )
-            c = vertice_overlap(
-                self[x_name][i],
-                self[y_name][i],
-                other[x_name][j],
-                other[y_name][j],
-                **kwargs,
-            )
+            x0, y0 = self[x_name][i_self], self[y_name][i_self]
+            x1, y1 = other[x_name][i_other], other[y_name][i_other]
+            i, j = bbox_intersection(x0, y0, x1, y1)
+            c = vertice_overlap(x0[i], y0[i], x1[j], y1[j], **kwargs)
         elif method == "close_center":
-            i, j, c = close_center(
-                self.latitude, self.longitude, other.latitude, other.longitude, **kwargs
-            )
-
-        m = c > cmin
+            x0, y0 = self.longitude[i_self], self.latitude[i_self]
+            x1, y1 = other.longitude[i_other], other.latitude[i_other]
+            i, j, c = close_center(x0, y0, x1, y1, **kwargs)
+        m = c >= cmin  # ajout >= pour garder la cmin dans la sélection
         return i[m], j[m], c[m]
+
+    @staticmethod
+    def re_reference_index(index, ref):
+        """
+        Shift index with ref
+
+        :param array,int index: local index to re ref
+        :param slice,array ref:
+            reference could be a slice in this case we juste add start to index
+            or could be indices and in this case we need to translate
+        """
+        if isinstance(ref, slice):
+            return index + ref.start
+        else:
+            return ref[index]
 
     @classmethod
     def cost_function_common_area(cls, xy_in, xy_out, distance, intern=False):
-        """ How does it work on x bound ?
+        """How does it work on x bound ?
 
         :param xy_in:
         :param xy_out:
@@ -947,6 +1215,20 @@ class EddiesObservations(object):
 
     @staticmethod
     def cost_function(records_in, records_out, distance):
+        r"""Return the cost function between two obs.
+
+        .. math::
+
+            cost = \sqrt{({Amp_{_{in}} - Amp_{_{out}} \over Amp_{_{in}}}) ^2 +
+              ({Rspeed_{_{in}} - Rspeed_{_{out}} \over Rspeed_{_{in}}}) ^2 +
+              ({distance \over 125}) ^2
+            }
+
+        :param records_in: starting observations
+        :param records_out: observations to associate
+        :param distance: computed between in and out
+
+        """
         cost = (
             (records_in["amplitude"] - records_out["amplitude"])
             / records_in["amplitude"]
@@ -962,16 +1244,11 @@ class EddiesObservations(object):
 
     def shifted_ellipsoid_degrees_mask(self, other, minor=1.5, major=1.5):
         return shifted_ellipsoid_degrees_mask2(
-            self.obs["lon"],
-            self.obs["lat"],
-            other.obs["lon"],
-            other.obs["lat"],
-            minor,
-            major,
+            self.lon, self.lat, other.lon, other.lat, minor, major
         )
 
     def fixed_ellipsoid_mask(
-        self, other, minor=50, major=100, only_east=False, shifted_ellips=False
+        self, other, minor=50, major=100, only_east=False, shifted_ellipse=False
     ):
         dist = self.distance(other).T
         accepted = dist < minor
@@ -991,45 +1268,44 @@ class EddiesObservations(object):
                 minor = minor[index_self]
             # focal distance
             f_degree = ((major ** 2 - minor ** 2) ** 0.5) / (
-                111.2 * cos(radians(self.obs["lat"][index_self]))
+                111.2 * cos(radians(self.lat[index_self]))
             )
 
-            lon_self = self.obs["lon"][index_self]
-            if shifted_ellips:
-                x_center_ellips = lon_self - (major - minor) / 2
+            lon_self = self.lon[index_self]
+            if shifted_ellipse:
+                x_center_ellipse = lon_self - (major - minor) / 2
             else:
-                x_center_ellips = lon_self
+                x_center_ellipse = lon_self
 
-            lon_left_f = x_center_ellips - f_degree
-            lon_right_f = x_center_ellips + f_degree
+            lon_left_f = x_center_ellipse - f_degree
+            lon_right_f = x_center_ellipse + f_degree
 
             dist_left_f = distance(
                 lon_left_f,
-                self.obs["lat"][index_self],
-                other.obs["lon"][index_other],
-                other.obs["lat"][index_other],
+                self.lat[index_self],
+                other.lon[index_other],
+                other.lat[index_other],
             )
             dist_right_f = distance(
                 lon_right_f,
-                self.obs["lat"][index_self],
-                other.obs["lon"][index_other],
-                other.obs["lat"][index_other],
+                self.lat[index_self],
+                other.lon[index_other],
+                other.lat[index_other],
             )
             dist_2a = (dist_left_f + dist_right_f) / 1000
 
             accepted[index_other, index_self] = dist_2a < (2 * major)
             if only_east:
-                d_lon = (other.obs["lon"][index_other] - lon_self + 180) % 360 - 180
+                d_lon = (other.lon[index_other] - lon_self + 180) % 360 - 180
                 mask = d_lon < 0
                 accepted[index_other[mask], index_self[mask]] = False
         return accepted.T
 
     @staticmethod
-    def basic_formula_ellips_major_axis(
+    def basic_formula_ellipse_major_axis(
         lats, cmin=1.5, cmax=10.0, c0=1.5, lat1=13.5, lat2=5.0, degrees=False
     ):
-        """Give major axis in km with a given latitude
-        """
+        """Give major axis in km with a given latitude"""
         # Straight line between lat1 and lat2:
         # y = a * x + b
         a = (cmin - cmax) / (lat1 - lat2)
@@ -1052,20 +1328,20 @@ class EddiesObservations(object):
 
     @staticmethod
     def solve_simultaneous(cost):
+        """Write something (TODO)"""
         mask = ~cost.mask
-        # Count number of link by self obs and other obs
-        self_links = mask.sum(axis=1)
-        other_links = mask.sum(axis=0)
+        # Count number of links by self obs and other obs
+        self_links, other_links = sum_row_column(mask)
         max_links = max(self_links.max(), other_links.max())
         if max_links > 5:
             logger.warning("One observation have %d links", max_links)
 
-        # If some obs have multiple link, we keep only one link by eddy
+        # If some obs have multiple links, we keep only one link by eddy
         eddies_separation = 1 < self_links
         eddies_merge = 1 < other_links
         test = eddies_separation.any() or eddies_merge.any()
         if test:
-            # We extract matrix which contains concflict
+            # We extract matrix that contains conflict
             obs_linking_to_self = mask[eddies_separation].any(axis=0)
             obs_linking_to_other = mask[:, eddies_merge].any(axis=1)
             i_self_keep = where(obs_linking_to_other + eddies_separation)[0]
@@ -1088,13 +1364,13 @@ class EddiesObservations(object):
             security_increment = 0
             while False in cost_reduce.mask:
                 if security_increment > max_iteration:
-                    # Maybe check if the size decrease if not rise an exception
+                    # Maybe check if the size decreases if not rise an exception
                     # x_i, y_i = where(-cost_reduce.mask)
                     raise Exception("To many iteration: %d" % security_increment)
                 security_increment += 1
                 i_min_value = cost_reduce.argmin()
                 i, j = floor(i_min_value / shape[1]).astype(int), i_min_value % shape[1]
-                # Set to False all link
+                # Set to False all links
                 mask[i_self_keep[i]] = False
                 mask[:, i_other_keep[j]] = False
                 cost_reduce.mask[i] = True
@@ -1108,19 +1384,19 @@ class EddiesObservations(object):
     @staticmethod
     def solve_first(cost, multiple_link=False):
         mask = ~cost.mask
-        # Count number of link by self obs and other obs
+        # Count number of links by self obs and other obs
         self_links = mask.sum(axis=1)
         other_links = mask.sum(axis=0)
         max_links = max(self_links.max(), other_links.max())
         if max_links > 5:
             logger.warning("One observation have %d links", max_links)
 
-        # If some obs have multiple link, we keep only one link by eddy
+        # If some obs have multiple links, we keep only one link by eddy
         eddies_separation = 1 < self_links
         eddies_merge = 1 < other_links
         test = eddies_separation.any() or eddies_merge.any()
         if test:
-            # We extract matrix which contains concflict
+            # We extract matrix that contains conflict
             obs_linking_to_self = mask[eddies_separation].any(axis=0)
             obs_linking_to_other = mask[:, eddies_merge].any(axis=1)
             i_self_keep = where(obs_linking_to_other + eddies_separation)[0]
@@ -1156,7 +1432,7 @@ class EddiesObservations(object):
         return mask
 
     def solve_function(self, cost_matrix):
-        return where(self.solve_simultaneous(cost_matrix))
+        return numba_where(self.solve_simultaneous(cost_matrix))
 
     def post_process_link(self, other, i_self, i_other):
         if unique(i_other).shape[0] != i_other.shape[0]:
@@ -1164,8 +1440,7 @@ class EddiesObservations(object):
         return i_self, i_other
 
     def tracking(self, other):
-        """Track obs between self and other
-        """
+        """Track obs between self and other"""
         dist = self.distance(other)
         mask_accept_dist = self.mask_function(other, dist)
         indexs_closest = where(mask_accept_dist)
@@ -1209,7 +1484,7 @@ class EddiesObservations(object):
                     dimensions=VAR_DESCR[name]["nc_dims"],
                 ),
                 VAR_DESCR[name]["nc_attr"],
-                self.observations[ori_name],
+                self.obs[ori_name],
                 scale_factor=VAR_DESCR[name].get("scale_factor", None),
                 add_offset=VAR_DESCR[name].get("add_offset", None),
                 filters=VAR_DESCR[name].get("filters", None),
@@ -1258,7 +1533,7 @@ class EddiesObservations(object):
                     dimensions=VAR_DESCR[name]["nc_dims"],
                 ),
                 VAR_DESCR[name]["nc_attr"],
-                self.observations[ori_name],
+                self.obs[ori_name],
                 scale_factor=VAR_DESCR[name].get("scale_factor", None),
                 add_offset=VAR_DESCR[name].get("add_offset", None),
                 **kwargs,
@@ -1322,6 +1597,7 @@ class EddiesObservations(object):
         add_offset=None,
         filters=None,
         compressor=None,
+        chunck_size=2500000,
     ):
         kwargs_variable["shape"] = data.shape
         kwargs_variable["compressor"] = (
@@ -1334,8 +1610,8 @@ class EddiesObservations(object):
                 add_offset = 0
             kwargs_variable["filters"].append(
                 zarr.FixedScaleOffset(
-                    offset=float64(add_offset),
-                    scale=1 / float64(scale_factor),
+                    offset=add_offset,
+                    scale=1 / scale_factor,
                     dtype=kwargs_variable["dtype"],
                     astype=store_dtype,
                 )
@@ -1345,10 +1621,10 @@ class EddiesObservations(object):
         dims = kwargs_variable.get("dimensions", None)
         # Manage chunk in 2d case
         if len(dims) == 1:
-            kwargs_variable["chunks"] = (2500000,)
+            kwargs_variable["chunks"] = (chunck_size,)
         if len(dims) == 2:
             second_dim = data.shape[1]
-            kwargs_variable["chunks"] = (200000, second_dim)
+            kwargs_variable["chunks"] = (chunck_size // second_dim, second_dim)
 
         kwargs_variable.pop("dimensions")
         v = handler_zarr.create_dataset(**kwargs_variable)
@@ -1376,7 +1652,7 @@ class EddiesObservations(object):
             logger.warning("Data is empty")
 
     def write_file(
-        self, path="./", filename="%(path)s/%(sign_type)s.nc", zarr_flag=False
+        self, path="./", filename="%(path)s/%(sign_type)s.nc", zarr_flag=False, **kwargs
     ):
         """Write a netcdf or zarr with eddy obs.
         Zarr is usefull for large dataset > 10M observations
@@ -1384,6 +1660,7 @@ class EddiesObservations(object):
         :param str path: set path variable
         :param str filename: model to store file
         :param bool zarr_flag: If True, method will use zarr format instead of netcdf
+        :param dict kwargs: look at :py:meth:`to_zarr` or :py:meth:`to_netcdf`
         """
         filename = filename % dict(
             path=path,
@@ -1394,13 +1671,13 @@ class EddiesObservations(object):
             filename = filename.replace(".nc", ".zarr")
         if filename.endswith(".zarr"):
             zarr_flag = True
-        logger.info("Store in %s", filename)
+        logger.info("Store in %s (%d observations)", filename, len(self))
         if zarr_flag:
             handler = zarr.open(filename, "w")
-            self.to_zarr(handler)
+            self.to_zarr(handler, **kwargs)
         else:
             with Dataset(filename, "w", format="NETCDF4") as handler:
-                self.to_netcdf(handler)
+                self.to_netcdf(handler, **kwargs)
 
     @property
     def global_attr(self):
@@ -1421,31 +1698,68 @@ class EddiesObservations(object):
         for key, item in self.global_attr.items():
             h_nc.setncattr(key, item)
 
+    def mask_from_polygons(self, polygons):
+        """
+        Return mask for all observations in one of polygons list
+
+        :param list((array,array)) polygons: list of x/y array which be used to identify observations
+        """
+        x, y = polygons[0]
+        m = insidepoly(
+            self.longitude, self.latitude, x.reshape((1, -1)), y.reshape((1, -1))
+        )
+        for x, y in polygons[1:]:
+            m_ = ~m
+            m[m_] = insidepoly(
+                self.longitude[m_],
+                self.latitude[m_],
+                x.reshape((1, -1)),
+                y.reshape((1, -1)),
+            )
+        return m
+
     def extract_with_area(self, area, **kwargs):
         """
-        Extract with a bounding box
+        Extract geographically with a bounding box.
 
         :param dict area: 4 coordinates in a dictionary to specify bounding box (lower left corner and upper right corner)
         :param dict kwargs: look at :py:meth:`extract_with_mask`
-        :return: Return all eddy tracks which are in bounds
+        :return: Return all eddy trajetories in bounds
         :rtype: EddiesObservations
+
+        .. code-block:: python
+
+            area = dict(llcrnrlon=x0, llcrnrlat=y0, urcrnrlon=x1, urcrnrlat=y1)
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.extract_with_area
         """
-        mask = (self.latitude > area["llcrnrlat"]) * (self.latitude < area["urcrnrlat"])
+        lat0 = area.get("llcrnrlat", -90)
+        lat1 = area.get("urcrnrlat", 90)
+        mask = (self.latitude > lat0) * (self.latitude < lat1)
         lon0 = area["llcrnrlon"]
         lon = (self.longitude - lon0) % 360 + lon0
         mask *= (lon > lon0) * (lon < area["urcrnrlon"])
         return self.extract_with_mask(mask, **kwargs)
 
+    def time_sub_sample(self, t0, time_step):
+        """
+        Time sub sampling
+
+        :param int,float t0: reference time that will be keep
+        :param int,float time_step: keep every observation spaced by time_step
+        """
+        mask = (self.time - t0) % time_step == 0
+        return self.extract_with_mask(mask)
+
     def extract_with_mask(self, mask):
         """
-        Extract a subset of observations
+        Extract a subset of observations.
 
         :param array(bool) mask: mask to select observations
         :return: same object with selected observations
         :rtype: self
         """
+
         nb_obs = mask.sum()
         new = self.__class__.new_like(self, nb_obs)
         new.sign_type = self.sign_type
@@ -1460,10 +1774,12 @@ class EddiesObservations(object):
 
     def scatter(self, ax, name=None, ref=None, factor=1, **kwargs):
         """
-        :param matplotlib.axes.Axes ax: matplotlib axes use to draw
-        :param str,None name:
-            var which will be use to fill contour, if None all element of collection will have same color
-        :param float,None ref: if define use like west bound
+        Scatter data.
+
+        :param matplotlib.axes.Axes ax: matplotlib axe used to draw
+        :param str,array,None name:
+            variable used to fill the contour, if None all elements have the same color
+        :param float,None ref: if defined, all coordinates are wrapped with ref as western boundary
         :param float factor: multiply value by
         :param dict kwargs: look at :py:meth:`matplotlib.axes.Axes.scatter`
         :return: scatter mappable
@@ -1475,7 +1791,8 @@ class EddiesObservations(object):
             x = (x - ref) % 360 + ref
         kwargs = kwargs.copy()
         if name is not None and "c" not in kwargs:
-            kwargs["c"] = self[name] * factor
+            v = self.parse_varname(name)
+            kwargs["c"] = v * factor
         return ax.scatter(x, self.latitude, **kwargs)
 
     def filled(
@@ -1492,14 +1809,14 @@ class EddiesObservations(object):
         **kwargs,
     ):
         """
-        :param matplotlib.axes.Axes ax: matplotlib axes use to draw
-        :param str,array varname, None: var which will be use to fill contour, or an array of same size of obs
-        :param float,None ref: if define use like west bound
-        :param bool intern: if True draw speed contour instead of effective contour
+        :param matplotlib.axes.Axes ax: matplotlib axe used to draw
+        :param str,array,None varname: variable used to fill the contours, or an array of same size than obs
+        :param float,None ref: if defined, all coordinates are wrapped with ref as western boundary
+        :param bool intern: if True draw speed contours instead of effective contours
         :param str cmap: matplotlib colormap name
-        :param int,None lut: Number of division of colormaps
-        :param float,None vmin:
-        :param float,None vmax:
+        :param int,None lut: Number of colors in the colormap
+        :param float,None vmin: Min value of the colorbar
+        :param float,None vmax: Max value of the colorbar
         :param float factor: multiply value by
         :return: Collection drawed
         :rtype: matplotlib.collections.PolyCollection
@@ -1519,7 +1836,7 @@ class EddiesObservations(object):
         if "facecolors" not in kwargs:
             kwargs = kwargs.copy()
             cmap = get_cmap(cmap, lut)
-            v = (self[varname] if isinstance(varname, str) else varname) * factor
+            v = self.parse_varname(varname) * factor
             if vmin is None:
                 vmin = v.min()
             if vmax is None:
@@ -1527,75 +1844,184 @@ class EddiesObservations(object):
             v = (v - vmin) / (vmax - vmin)
             colors = [cmap(v_) for v_ in v]
             kwargs["facecolors"] = colors
+        if "label" in kwargs:
+            kwargs["label"] = self.format_label(kwargs["label"])
         c = PolyCollection(verts, **kwargs)
         ax.add_collection(c)
         c.cmap = cmap
         c.norm = Normalize(vmin=vmin, vmax=vmax)
         return c
 
-    def bins_stat(self, name, bins=None):
+    def __merge_filters__(self, *filters):
         """
-        :param str name: var which will be use
-        :param array, None bins: bins to perform statistics,if None method will get min and max of variable
+        Compute an intersection between all filters after to evaluate each of them
+
+        :param list(slice,array[int],array[bool]) filters:
+
+        :return: Return applicable object to numpy.array
+        :rtype: slice, index, mask
+        """
+        filter1 = filters[0]
+        if len(filters) > 2:
+            filter2 = self.__merge_filters__(*filters[1:])
+        elif len(filters) == 2:
+            filter2 = filters[1]
+        # Merge indexs and filter
+        if isinstance(filter1, slice):
+            reject = ones(len(self), dtype="bool")
+            reject[filter1] = False
+            if isinstance(filter2, slice):
+                reject[filter2] = False
+                return ~reject
+            # Mask case
+            elif filter2.dtype == bool:
+                return ~reject * filter2
+            # index case
+            else:
+                return filter2[~reject[filter2]]
+        # mask case
+        elif filter1.dtype == bool:
+            if isinstance(filter2, slice):
+                select = zeros(len(self), dtype="bool")
+                select[filter2] = True
+                return select * filter1
+            # Mask case
+            elif filter2.dtype == bool:
+                return filter2 * filter1
+            # index case
+            else:
+                return filter2[filter1[filter2]]
+        # index case
+        else:
+            if isinstance(filter2, slice):
+                select = zeros(len(self), dtype="bool")
+                select[filter2] = True
+                return filter1[select[filter1]]
+            # Mask case
+            elif filter2.dtype == bool:
+                return filter1[filter2[filter1]]
+            # index case
+            else:
+                return filter1[in1d(filter1, filter2)]
+
+    def merge_filters(self, *filters):
+        """
+        Compute an intersection between all filters after to evaluate each of them
+
+        :param list(callable,None,slice,array[int],array[bool]) filters:
+
+        :return: Return applicable object to numpy.array
+        :rtype: slice, index, mask
+        """
+        if len(filters) == 1 and isinstance(filters[0], list):
+            filters = filters[0]
+        filters_ = list()
+        # Remove all filter which select all obs
+        for filter in filters:
+            if callable(filter):
+                filter = filter(self)
+            if filter is None:
+                continue
+            if isinstance(filter, slice):
+                if filter == slice(None):
+                    continue
+            elif filter.dtype == "bool":
+                if filter.all():
+                    continue
+                if not filter.any():
+                    return empty(0, dtype=int)
+            filters_.append(filter)
+        if len(filters_) == 1:
+            return filters_[0]
+        elif len(filters_) == 0:
+            return slice(None)
+        else:
+            return self.__merge_filters__(*filters_)
+
+    def bins_stat(self, xname, bins=None, yname=None, method=None, mask=None):
+        """
+        :param str,array xname: variable to compute stats on
+        :param array, None bins: bins to perform statistics, if None bins = arange(variable.min(), variable.max() + 2)
+        :param None,str,array yname: variable used to apply method
+        :param None,str method: If None method counts the number of observations in each bin, can be "mean", "std"
+        :param None,array(bool) mask: If defined use only True position
         :return: x array and y array
         :rtype: array,array
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.bins_stat
         """
-        v = self[name]
+        v = self.parse_varname(xname)
+        mask = self.merge_filters(mask)
+        v = v[mask]
         if bins is None:
             bins = arange(v.min(), v.max() + 2)
         y, x = hist_numba(v, bins=bins)
         x = (x[1:] + x[:-1]) / 2
+        if method == "mean":
+            y_v = self.parse_varname(yname)
+            y_v = y_v[mask]
+            y_, _ = histogram(v, bins=bins, weights=y_v)
+            with errstate(divide="ignore", invalid="ignore"):
+                y = y_ / y
         return x, y
 
-    def display(
-        self, ax, ref=None, extern_only=False, intern_only=False, nobs=True, **kwargs
-    ):
-        """
-        :param matplotlib.axes.Axes ax: matplotlib axes use to draw
-        :param float,None ref: if define use like west bound
-        :param bool extern_only: if True draw effective contour only
-        :param bool intern_only: if True draw speed contour only
-        :param bool nobs: if True add number of eddies in label
+    def format_label(self, label):
+        t0, t1 = self.period
+        return label.format(
+            t0=t0,
+            t1=t1,
+            nb_obs=len(self),
+        )
+
+    def display(self, ax, ref=None, extern_only=False, intern_only=False, **kwargs):
+        """Plot the speed and effective (dashed) contour of the eddies
+
+        :param matplotlib.axes.Axes ax: matplotlib axe used to draw
+        :param float,None ref: western longitude reference used
+        :param bool extern_only: if True, draw only the effective contour
+        :param bool intern_only: if True, draw only the speed contour
         :param dict kwargs: look at :py:meth:`matplotlib.axes.Axes.plot`
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.display
         """
         if not extern_only:
-            lon_s = flatten_line_matrix(self.obs["contour_lon_s"])
-            lat_s = flatten_line_matrix(self.obs["contour_lat_s"])
+            lon_s = flatten_line_matrix(self.contour_lon_s)
+            lat_s = flatten_line_matrix(self.contour_lat_s)
         if not intern_only:
-            lon_e = flatten_line_matrix(self.obs["contour_lon_e"])
-            lat_e = flatten_line_matrix(self.obs["contour_lat_e"])
-        if nobs and "label" in kwargs:
-            kwargs["label"] += " (%s observations)" % len(self)
+            lon_e = flatten_line_matrix(self.contour_lon_e)
+            lat_e = flatten_line_matrix(self.contour_lat_e)
+        if "label" in kwargs:
+            kwargs["label"] = self.format_label(kwargs["label"])
         kwargs_e = kwargs.copy()
+        if "ls" not in kwargs_e and "linestyle" not in kwargs_e:
+            kwargs_e["linestyle"] = "-."
         if not extern_only:
             kwargs_e.pop("label", None)
 
+        mappables = list()
         if not extern_only:
             if ref is not None:
                 lon_s, lat_s = wrap_longitude(lon_s, lat_s, ref, cut=True)
-            ax.plot(lon_s, lat_s, **kwargs)
+            mappables.append(ax.plot(lon_s, lat_s, **kwargs)[0])
         if not intern_only:
             if ref is not None:
                 lon_e, lat_e = wrap_longitude(lon_e, lat_e, ref, cut=True)
-            ax.plot(lon_e, lat_e, linestyle="-.", **kwargs_e)
+            mappables.append(ax.plot(lon_e, lat_e, **kwargs_e)[0])
+        return mappables
 
     def first_obs(self):
         """
-        Get first obs of each tracks.
+        Get first obs of each trajectory.
 
         :rtype: __class__
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.first_obs
         """
-        return self.extract_with_mask(self["n"] == 0)
+        return self.extract_with_mask(self.n == 0)
 
     def last_obs(self):
         """
-        Get Last obs of each tracks.
+        Get Last obs of each trajectory.
 
         :rtype: __class__
 
@@ -1603,12 +2029,39 @@ class EddiesObservations(object):
         """
         m = zeros(len(self), dtype="bool")
         m[-1] = True
-        m[:-1][self["n"][1:] == 0] = True
+        m[:-1][self.n[1:] == 0] = True
         return self.extract_with_mask(m)
+
+    def is_convex(self, intern=False):
+        """
+        Get flag of the eddy's convexity
+
+        :param bool intern: If True use speed contour instead of effective contour
+        :return: True if the contour is convex
+        :rtype: array[bool]
+        """
+        xname, yname = self.intern(intern)
+        return convexs(self[xname], self[yname])
+
+    def contains(self, x, y, intern=False):
+        """
+        Return index of contour which contain (x,y)
+
+        :param array x: longitude
+        :param array y: latitude
+        :param bool intern: If true use speed contour instead of effective contour
+        :return: indexs, -1 if no index
+        :rtype: array[int32]
+        """
+        xname, yname = self.intern(intern)
+        m = ~(isnan(x) + isnan(y))
+        i = -ones(x.shape, dtype="i4")
+        i[m] = poly_indexs(x[m], y[m], self[xname], self[yname])
+        return i
 
     def inside(self, x, y, intern=False):
         """
-        True for each postion inside an eddy
+        True for each point inside the effective contour of an eddy
 
         :param array x: longitude
         :param array y: latitude
@@ -1617,20 +2070,23 @@ class EddiesObservations(object):
         :rtype: array[bool]
         """
         xname, yname = self.intern(intern)
+        # FIXME: wrapping
         return insidepoly(x, y, self[xname], self[yname])
 
-    def grid_count(self, bins, intern=False, center=False):
+    def grid_count(self, bins, intern=False, center=False, filter=slice(None)):
         """
-        Compute count of eddies in each bin (use of all pixel in each contour)
+        Count the eddies in each bin (use all pixels in each contour)
 
-        :param (numpy.array,numpy.array) bins: bins to compute count
+        :param (numpy.array,numpy.array) bins: bins (grid) to count
         :param bool intern: if True use speed contour only
         :param bool center: if True use of center to count
-        :return: return grid of count
+        :param array,mask,slice filter: keep the data selected with the filter
+        :return: return the grid of counts
         :rtype: py_eddy_tracker.dataset.grid.RegularGridDataset
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.grid_count
         """
+        filter = self.merge_filters(filter)
         x_name, y_name = self.intern(intern)
         x_bins, y_bins = arange(*bins[0]), arange(*bins[1])
         x0 = bins[0][0]
@@ -1645,37 +2101,91 @@ class EddiesObservations(object):
                 lat=(y_bins[1:] + y_bins[:-1]) / 2,
             ),
             variables_description=dict(
-                count=dict(long_name="Number of times pixel is in eddies")
+                count=dict(long_name="Number of times the pixel is within an eddy")
             ),
             centered=True,
         )
-        debug_active = logger.getEffectiveLevel() == logging.DEBUG
         if center:
-            x, y = (self.longitude - x0) % 360 + x0, self.latitude
+            x, y = (self.longitude[filter] - x0) % 360 + x0, self.latitude[filter]
             grid[:] = histogram2d(x, y, (x_bins, y_bins))[0]
             grid.mask = grid.data == 0
         else:
-            x_ref = ((self.longitude - x0) % 360 + x0 - 180).reshape(-1, 1)
-            # x, y = (self[x_name] - x_ref) % 360 + x_ref, self[y_name]
-            nb = x_ref.shape[0]
-            for i_, (x, y_) in enumerate(zip(self[x_name], self[y_name])):
-                x_ = (x - x_ref[i_]) % 360 + x_ref[i_]
-                if debug_active and i_ % 10000 == 0:
-                    print(f"{i_}/{nb}", end="\r")
-                i, j = BasePath(create_vertice(x_, y_)).pixels_in(regular_grid)
-                grid_count_(grid, i, j)
-            if debug_active:
-                print()
+            x_ref = ((self.longitude[filter] - x0) % 360 + x0 - 180).reshape(-1, 1)
+            x_contour, y_contour = self[x_name][filter], self[y_name][filter]
+            grid_count_pixel_in(
+                grid,
+                x_contour,
+                y_contour,
+                x_ref,
+                regular_grid.x_bounds,
+                regular_grid.y_bounds,
+                regular_grid.xstep,
+                regular_grid.ystep,
+                regular_grid.N,
+                regular_grid.is_circular(),
+                regular_grid.x_size,
+                regular_grid.x_c,
+                regular_grid.y_c,
+            )
             grid.mask = grid == 0
         return regular_grid
 
-    def grid_stat(self, bins, varname):
+    def grid_box_stat(self, bins, varname, method=50, data=None, filter=slice(None)):
         """
-        Compute mean of eddies in each bin
+        Get percentile of eddies in each bin
 
-        :param (numpy.array,numpy.array) bins: bins to compute count
-        :param str varname: name of variable to compute mean
-        :return: return grid of mean
+        :param (numpy.array,numpy.array) bins: bins (grid) to count
+        :param str varname: variable to apply the method if data is None and will be output name
+        :param str,float method: method to apply. If float, use ?
+        :param array data: Array used to compute stat if defined
+        :param array,mask,slice filter: keep the data selected with the filter
+        :return: return grid of method
+        :rtype: py_eddy_tracker.dataset.grid.RegularGridDataset
+
+        .. minigallery:: py_eddy_tracker.EddiesObservations.grid_box_stat
+        """
+        x_bins, y_bins = arange(*bins[0]), arange(*bins[1])
+        x0 = bins[0][0]
+        x, y = (self.longitude - x0) % 360 + x0, self.latitude
+        data = self[varname] if data is None else data
+        if hasattr(data, "mask"):
+            filter = self.merge_filters(~data.mask, self.merge_filters(filter))
+        else:
+            filter = self.merge_filters(filter)
+        x, y, data = x[filter], y[filter], data[filter]
+
+        from ..dataset.grid import RegularGridDataset
+
+        shape = (x_bins.shape[0] - 1, y_bins.shape[0] - 1)
+        grid = ma.empty(shape, dtype=data.dtype)
+        grid.mask = ones(shape, dtype="bool")
+        regular_grid = RegularGridDataset.with_array(
+            coordinates=("x", "y"),
+            datas={varname: grid, "x": x_bins[:-1], "y": y_bins[:-1]},
+            centered=False,
+        )
+        grid_box_stat(
+            regular_grid.x_c,
+            regular_grid.y_c,
+            grid.data,
+            grid.mask,
+            x,
+            y,
+            data,
+            regular_grid.is_circular(),
+            method,
+        )
+
+        return regular_grid
+
+    def grid_stat(self, bins, varname, data=None):
+        """
+        Return the mean of the eddies' variable in each bin
+
+        :param (numpy.array,numpy.array) bins: bins (grid) to compute the mean on
+        :param str varname: name of variable to compute the mean on and output grid_name
+        :param array data: Array used to compute stat if defined
+        :return: return the gridde mean variable
         :rtype: py_eddy_tracker.dataset.grid.RegularGridDataset
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.grid_stat
@@ -1683,18 +2193,26 @@ class EddiesObservations(object):
         x_bins, y_bins = arange(*bins[0]), arange(*bins[1])
         x0 = bins[0][0]
         x, y = (self.longitude - x0) % 360 + x0, self.latitude
-        sum_obs = histogram2d(x, y, (x_bins, y_bins), weights=self[varname])[0]
-        nb_obs = histogram2d(x, y, (x_bins, y_bins))[0]
+        data = self[varname] if data is None else data
+        if hasattr(data, "mask"):
+            m = ~data.mask
+            sum_obs = histogram2d(x[m], y[m], (x_bins, y_bins), weights=data[m])[0]
+            nb_obs = histogram2d(x[m], y[m], (x_bins, y_bins))[0]
+        else:
+            sum_obs = histogram2d(x, y, (x_bins, y_bins), weights=data)[0]
+            nb_obs = histogram2d(x, y, (x_bins, y_bins))[0]
         from ..dataset.grid import RegularGridDataset
 
-        regular_grid = RegularGridDataset.with_array(
-            coordinates=("x", "y"),
-            datas={
-                varname: ma.array(sum_obs / nb_obs, mask=nb_obs == 0),
-                "x": x_bins[:-1],
-                "y": y_bins[:-1],
-            },
-        )
+        with errstate(divide="ignore", invalid="ignore"):
+            regular_grid = RegularGridDataset.with_array(
+                coordinates=("x", "y"),
+                datas={
+                    varname: ma.array(sum_obs / nb_obs, mask=nb_obs == 0),
+                    "x": x_bins[:-1],
+                    "y": y_bins[:-1],
+                },
+                centered=False,
+            )
         return regular_grid
 
     def interp_grid(
@@ -1706,12 +2224,14 @@ class EddiesObservations(object):
         :param grid_object: Handler of grid to interp
         :type grid_object: py_eddy_tracker.dataset.grid.RegularGridDataset
         :param str varname: Name of variable to use
-        :param str method: 'center', 'mean', 'max', 'min'
+        :param str method: 'center', 'mean', 'max', 'min', 'nearest'
         :param str dtype: if None we use var dtype
         :param bool intern: Use extern or intern contour
+
+        .. minigallery:: py_eddy_tracker.EddiesObservations.interp_grid
         """
-        if method == "center":
-            return grid_object.interp(varname, self.longitude, self.latitude)
+        if method in ("center", "nearest"):
+            return grid_object.interp(varname, self.longitude, self.latitude, method)
         elif method in ("min", "max", "mean", "count"):
             x0 = grid_object.x_bounds[0]
             x_name, y_name = self.intern(False if intern is None else intern)
@@ -1737,54 +2257,149 @@ class EddiesObservations(object):
     @property
     def period(self):
         """
-        Give time coverage
+        Give the time coverage. If collection is empty, return nan,nan
 
         :return: first and last date
         :rtype: (int,int)
         """
-        return self.time.min(), self.time.max()
+        if self.period_ is None:
+            if self.time.size < 1:
+                self.period_ = nan, nan
+            else:
+                self.period_ = self.time.min(), self.time.max()
+        return self.period_
+
+    @property
+    def nb_days(self):
+        """Return period in days covered by the dataset
+
+        :return: Number of days
+        :rtype: int
+        """
+        return self.period[1] - self.period[0] + 1
 
 
 @njit(cache=True)
 def grid_count_(grid, i, j):
+    """
+    Add 1 to each index
+    """
     for i_, j_ in zip(i, j):
         grid[i_, j_] += 1
 
 
 @njit(cache=True)
-def insidepoly(x_p, y_p, x_c, y_c):
+def grid_count_pixel_in(
+    grid,
+    x,
+    y,
+    x_ref,
+    x_bounds,
+    y_bounds,
+    xstep,
+    ystep,
+    N,
+    is_circular,
+    x_size,
+    x_c,
+    y_c,
+):
     """
-    True for each postion inside a contour
+    Count how many times a pixel is used.
 
-    :param array x_p: longitude to test
-    :param array y_p: latitude to test
-    :param array x_c: longitude of contours
-    :param array y_c: latitude of contours
+    :param array grid:
+    :param array x: x for all contour
+    :param array y: y for all contour
+    :param array x_ref: x reference for wrapping
+    :param array x_bounds: grid longitude
+    :param array y_bounds: grid latitude
+    :param float xstep: step between two longitude
+    :param float ystep: step between two latitude
+    :param int N: shift of index to enlarge window
+    :param bool is_circular: To know if grid is wrappable
+    :param int x_size: Number of longitude
+    :param array x_c: longitude coordinate of grid
+    :param array y_c: latitude coordinate of grid
     """
-    nb_p = x_p.shape[0]
-    nb_c = x_c.shape[0]
-    flag = zeros(nb_p, dtype=numba_types.bool_)
-    for i in range(nb_c):
-        x_c_min, y_c_min = x_c[i].min(), y_c[i].min()
-        x_c_max, y_c_max = x_c[i].max(), y_c[i].max()
-        v = create_vertice(x_c[i], y_c[i])
-        for j in range(nb_p):
-            x, y = x_p[j], y_p[j]
-            if flag[j]:
-                continue
-            if x > x_c_min and x < x_c_max and y > y_c_min and y < y_c_max:
-                if winding_number_poly(x, y, v) != 0:
-                    flag[j] = True
-    return flag
+    nb = x_ref.shape[0]
+    for i_ in range(nb):
+        x_, y_, x_ref_ = x[i_], y[i_], x_ref[i_]
+        x_ = (x_ - x_ref_) % 360 + x_ref_
+        x_, y_ = reduce_size(x_, y_)
+        v = create_vertice(x_, y_)
+        (x_start, x_stop), (y_start, y_stop) = bbox_indice_regular(
+            v,
+            x_bounds,
+            y_bounds,
+            xstep,
+            ystep,
+            N,
+            is_circular,
+            x_size,
+        )
+        i, j = get_pixel_in_regular(v, x_c, y_c, x_start, x_stop, y_start, y_stop)
+        grid_count_(grid, i, j)
+
+
+@njit(cache=True)
+def grid_box_stat(x_c, y_c, grid, mask, x, y, value, circular=False, method=50):
+    """
+    Compute method on each set (one set by box)
+
+    :param array_like x_c: grid longitude coordinates
+    :param array_like y_c: grid latitude coordinates
+    :param array_like grid: grid to store the result
+    :param array[bool] mask: grid to store unused boxes
+    :param array_like x: longitude of observations
+    :param array_like y: latitude of observations
+    :param array_like value: value to group to apply method
+    :param bool circular: True if grid is wrappable
+    :param float method: percentile
+    """
+    xstep, ystep = x_c[1] - x_c[0], y_c[1] - y_c[0]
+    x0, y0 = x_c[0] - xstep / 2.0, y_c[0] - ystep / 2.0
+    nb_x = x_c.shape[0]
+    nb_y = y_c.shape[0]
+    i, j = (
+        ((x - x0) // xstep).astype(numba_types.int32),
+        ((y - y0) // ystep).astype(numba_types.int32),
+    )
+    if circular:
+        i %= nb_x
+    else:
+        if (i < 0).any():
+            raise Exception("x indices underflow")
+        if (i >= nb_x).any():
+            raise Exception("x indices overflow")
+        if (j < 0).any():
+            raise Exception("y indices underflow")
+        if (j >= nb_y).any():
+            raise Exception("y indices overflow")
+    abs_i = j * nb_x + i
+    k_sort = abs_i.argsort()
+    i0, j0 = i[k_sort[0]], j[k_sort[0]]
+    values = list()
+    for k in k_sort:
+        i_, j_ = i[k], j[k]
+        # group change
+        if i_ != i0 or j_ != j0:
+            # apply method and store result
+            grid[i_, j_] = percentile(values, method)
+            mask[i_, j_] = False
+            # start new group
+            i0, j0 = i_, j_
+            # reset list
+            values.clear()
+        values.append(value[k])
 
 
 @njit(cache=True)
 def grid_stat(x_c, y_c, grid, x, y, result, circular=False, method="mean"):
     """
-    Compute mean of grid for each contour
+    Compute the mean or the max of the grid for each contour
 
-    :param array_like x_c: longitude coordinate of grid
-    :param array_like y_c: latitude coordinate of grid
+    :param array_like x_c: the grid longitude coordinates
+    :param array_like y_c: the grid latitude coordinates
     :param array_like grid: grid value
     :param array_like x: longitude of contours
     :param array_like y: latitude of contours
@@ -1792,24 +2407,33 @@ def grid_stat(x_c, y_c, grid, x, y, result, circular=False, method="mean"):
     :param bool circular: True if grid is wrappable
     :param str method: 'mean', 'max'
     """
+    # FIXME : how does it work on grid bound
     nb = result.shape[0]
     xstep, ystep = x_c[1] - x_c[0], y_c[1] - y_c[0]
     x0, y0 = x_c - xstep / 2.0, y_c - ystep / 2.0
     nb_x = x_c.shape[0]
     max_method = "max" == method
     mean_method = "mean" == method
+    count_method = "count" == method
     for elt in range(nb):
-        v = create_vertice(x[elt], y[elt],)
+        v = create_vertice(x[elt], y[elt])
         (x_start, x_stop), (y_start, y_stop) = bbox_indice_regular(
             v, x0, y0, xstep, ystep, 1, circular, nb_x
         )
         i, j = get_pixel_in_regular(v, x_c, y_c, x_start, x_stop, y_start, y_stop)
 
-        if mean_method:
+        if count_method:
+            result[elt] = i.shape[0]
+        elif mean_method:
             v_sum = 0
             for i_, j_ in zip(i, j):
                 v_sum += grid[i_, j_]
-            result[elt] = v_sum / i.shape[0]
+            nb_ = i.shape[0]
+            # FIXME : how does it work on grid bound,
+            if nb_ == 0:
+                result[elt] = nan
+            else:
+                result[elt] = v_sum / nb_
         elif max_method:
             v_max = -1e40
             for i_, j_ in zip(i, j):
@@ -1818,8 +2442,7 @@ def grid_stat(x_c, y_c, grid, x, y, result, circular=False, method="mean"):
 
 
 class VirtualEddiesObservations(EddiesObservations):
-    """Class to work with virtual obs
-    """
+    """Class to work with virtual obs"""
 
     __slots__ = ()
 
@@ -1828,3 +2451,90 @@ class VirtualEddiesObservations(EddiesObservations):
         elements = super().elements
         elements.extend(["track", "segment_size", "dlon", "dlat"])
         return list(set(elements))
+
+
+@njit(cache=True)
+def numba_where(mask):
+    """Usefull when mask is close to be empty"""
+    return where(mask)
+
+
+@njit(cache=True)
+def sum_row_column(mask):
+    """
+    Compute sum on row and column at same time
+    """
+    nb_x, nb_y = mask.shape
+    row_sum = zeros(nb_x, dtype=numba_types.int32)
+    column_sum = zeros(nb_y, dtype=numba_types.int32)
+    for i in range(nb_x):
+        for j in range(nb_y):
+            if mask[i, j]:
+                row_sum[i] += 1
+                column_sum[j] += 1
+    return row_sum, column_sum
+
+
+@njit(cache=True)
+def numba_digitize(values, bins):
+    # Check if bins are regular
+    nb_bins = bins.shape[0]
+    step = bins[1] - bins[0]
+    bin_previous = bins[1]
+    for i in range(2, nb_bins):
+        bin_current = bins[i]
+        if step != (bin_current - bin_previous):
+            # If bins are not regular
+            return digitize(values, bins)
+        bin_previous = bin_current
+    nb_values = values.shape[0]
+    out = empty(nb_values, dtype=numba_types.int64)
+    up, down = bins[0], bins[-1]
+    for i in range(nb_values):
+        v_ = values[i]
+        if v_ >= down:
+            out[i] = nb_bins
+            continue
+        if v_ < up:
+            out[i] = 0
+            continue
+        out[i] = (v_ - bins[0]) / step + 1
+    return out
+
+
+@njit(cache=True)
+def iter_mode_reduce(x, bins):
+    """
+    Test if we could use a reduce mode
+
+    :param array x: array to divide in group
+    :param array bins: array which defined bounds between each group
+    :return: If reduce mode, translator, and reduce x
+    """
+    nb = x.shape[0]
+    # If we use less than half value
+    limit = nb // 2
+    # low and up
+    x0, x1 = bins[0], bins[-1]
+    m = empty(nb, dtype=numba_types.bool_)
+    # To count number of value cover by bins
+    c = 0
+    for i in range(nb):
+        x_ = x[i]
+        test = (x_ >= x0) * (x_ <= x1)
+        m[i] = test
+        if test:
+            c += 1
+            # If number value exceed limit
+            if c > limit:
+                return False, empty(0, dtype=numba_types.int_), x
+    # Indices to be able to translate in full index array
+    indices = empty(c, dtype=numba_types.int_)
+    x_ = empty(c, dtype=x.dtype)
+    j = 0
+    for i in range(nb):
+        if m[i]:
+            indices[j] = i
+            x_[j] = x[i]
+            j += 1
+    return True, indices, x_

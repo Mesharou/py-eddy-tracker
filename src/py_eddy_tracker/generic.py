@@ -3,33 +3,54 @@
 Tool method which use mostly numba
 """
 
+from numba import njit, prange
+from numba import types as numba_types
 from numpy import (
-    sin,
-    pi,
-    cos,
-    arctan2,
-    arcsin,
-    empty,
-    nan,
     absolute,
+    arcsin,
+    arctan2,
+    bool_,
+    cos,
+    empty,
     floor,
-    ones,
-    linspace,
+    histogram,
     interp,
+    isnan,
+    linspace,
+    nan,
+    ones,
+    pi,
+    radians,
+    sin,
     where,
     zeros,
-    isnan,
-    bool_,
-    radians,
-    histogram,
 )
-from numba import njit, prange, types as numba_types
+
+
+@njit(cache=True)
+def count_consecutive(mask):
+    """
+    Count consecutive events every False flag count restart
+
+    :param array[bool] mask: event to count
+    :return: count when consecutive event
+    :rtype: array
+    """
+    count = 0
+    output = zeros(mask.shape, dtype=numba_types.int_)
+    for i in range(mask.shape[0]):
+        if not mask[i]:
+            count = 0
+            continue
+        count += 1
+        output[i] = count
+    return output
 
 
 @njit(cache=True)
 def reverse_index(index, nb):
     """
-    Compute a list of index, which are not in index.
+    Compute a list of indices, which are not in index.
 
     :param array index: index of group which will be set to False
     :param array nb: Count for each group
@@ -44,12 +65,17 @@ def reverse_index(index, nb):
 
 @njit(cache=True)
 def build_index(groups):
-    """We expected that variable is monotonous, and return index for each step change.
+    """We expect that variable is monotonous, and return index for each step change.
 
-    :param array groups: array which contain group to be separated
-    :return: (first_index of each group, last_index of each group, value to shift group)
+    :param array groups: array that contains groups to be separated
+    :return: (first_index of each group, last_index of each group, value to shift groups)
     :rtype: (array, array, int)
+    Examples
+    --------
+    >>> build_index(array((1, 1, 3, 4, 4)))
+    (array([0, 2, 2, 3]), array([2, 2, 3, 5]), 1)
     """
+
     i0, i1 = groups.min(), groups.max()
     amplitude = i1 - i0 + 1
     # Index of first observation for each group
@@ -57,32 +83,33 @@ def build_index(groups):
     for i, group in enumerate(groups[:-1]):
         # Get next value to compare
         next_group = groups[i + 1]
-        # if different we need to set index
+        # if different we need to set index for all groups between the 2 values
         if group != next_group:
             first_index[group - i0 + 1 : next_group - i0 + 1] = i + 1
     last_index = zeros(amplitude, dtype=numba_types.int_)
     last_index[:-1] = first_index[1:]
+    # + 2 because we iterate only until -2 and we want upper bound ( 1 + 1)
     last_index[-1] = i + 2
     return first_index, last_index, i0
 
 
 @njit(cache=True)
 def hist_numba(x, bins):
-    """Call numba histogram  to speed up."""
+    """Call numba histogram to speed up."""
     return histogram(x, bins)
 
 
 @njit(cache=True, fastmath=True, parallel=False)
 def distance_grid(lon0, lat0, lon1, lat1):
     """
-    Get distance for every couple of point.
+    Get distance for every couple of points.
 
     :param array lon0:
     :param array lat0:
     :param array lon1:
     :param array lat1:
 
-    :return: nan value for far away point, and km for other
+    :return: nan value for far away points, and km for other
     :rtype: array
     """
     nb_0 = lon0.shape[0]
@@ -137,7 +164,7 @@ def cumsum_by_track(field, track):
     Cumsum by track.
 
     :param array field: data to sum
-    :pram array(int) track: id of track to separate data
+    :pram array(int) track: id of trajectories to separate data
     :return: cumsum with a reset at each start of track
     :rtype: array
     """
@@ -148,17 +175,70 @@ def cumsum_by_track(field, track):
         tr = track[i]
         if tr != tr_previous:
             d_cum = 0
-        cumsum_array[i] = d_cum
         d_cum += field[i]
+        cumsum_array[i] = d_cum
         tr_previous = tr
-    cumsum_array[i + 1] = d_cum
     return cumsum_array
 
 
 @njit(cache=True, fastmath=True)
-def interp2d_geo(x_g, y_g, z_g, m_g, x, y):
+def interp2d_geo(x_g, y_g, z_g, m_g, x, y, nearest=False):
     """
     For geographic grid, test of cicularity.
+
+    :param array x_g: coordinates of grid
+    :param array y_g: coordinates of grid
+    :param array z_g: Grid value
+    :param array m_g: Boolean grid, True if value is masked
+    :param array x: coordinate where interpolate z
+    :param array y: coordinate where interpolate z
+    :param bool nearest: if True we will take nearest pixel
+    :return: z interpolated
+    :rtype: array
+    """
+    if nearest:
+        return interp2d_nearest(x_g, y_g, z_g, x, y)
+    else:
+        return interp2d_bilinear(x_g, y_g, z_g, m_g, x, y)
+
+
+@njit(cache=True, fastmath=True)
+def interp2d_nearest(x_g, y_g, z_g, x, y):
+    """
+    Nearest interpolation with wrapping if circular
+
+    :param array x_g: coordinates of grid
+    :param array y_g: coordinates of grid
+    :param array z_g: Grid value
+    :param array x: coordinate where interpolate z
+    :param array y: coordinate where interpolate z
+    :return: z interpolated
+    :rtype: array
+    """
+    x_ref = x_g[0]
+    y_ref = y_g[0]
+    x_step = x_g[1] - x_ref
+    y_step = y_g[1] - y_ref
+    nb_x = x_g.shape[0]
+    nb_y = y_g.shape[0]
+    is_circular = abs(x_g[-1] % 360 - (x_g[0] - x_step) % 360) < 1e-5
+    z = empty(x.shape, dtype=z_g.dtype)
+    for i in prange(x.size):
+        i0 = int(round((x[i] - x_ref) / x_step))
+        j0 = int(round((y[i] - y_ref) / y_step))
+        if is_circular:
+            i0 %= nb_x
+        if i0 >= nb_x or i0 < 0 or j0 < 0 or j0 >= nb_y:
+            z[i] = nan
+            continue
+        z[i] = z_g[i0, j0]
+    return z
+
+
+@njit(cache=True, fastmath=True)
+def interp2d_bilinear(x_g, y_g, z_g, m_g, x, y):
+    """
+    Bilinear interpolation with wrapping if circular
 
     :param array x_g: coordinates of grid
     :param array y_g: coordinates of grid
@@ -169,39 +249,52 @@ def interp2d_geo(x_g, y_g, z_g, m_g, x, y):
     :return: z interpolated
     :rtype: array
     """
-    # TODO : Maybe test if we are out of bounds
     x_ref = x_g[0]
     y_ref = y_g[0]
     x_step = x_g[1] - x_ref
     y_step = y_g[1] - y_ref
     nb_x = x_g.shape[0]
     nb_y = y_g.shape[0]
-    is_circular = (x_g[-1] + x_step) % 360 == x_g[0] % 360
+    is_circular = abs(x_g[-1] % 360 - (x_g[0] - x_step) % 360) < 1e-5
+    # Indexes that should never exist
+    i0_old, j0_old, masked = -100000000, -10000000, False
     z = empty(x.shape, dtype=z_g.dtype)
     for i in prange(x.size):
         x_ = (x[i] - x_ref) / x_step
         y_ = (y[i] - y_ref) / y_step
         i0 = int(floor(x_))
-        i1 = i0 + 1
-        xd = x_ - i0
+        # To keep original values if wrapping applied to compute xd
+        i0_ = i0
         j0 = int(floor(y_))
-        j1 = j0 + 1
-        if is_circular:
-            i0 %= nb_x
-            i1 %= nb_x
-        else:
+        # corners are the same need only a new xd and yd
+        if i0 != i0_old or j0 != j0_old:
+            i1 = i0 + 1
+            j1 = j0 + 1
+            if is_circular:
+                i0 %= nb_x
+                i1 %= nb_x
             if i1 >= nb_x or i0 < 0 or j0 < 0 or j1 >= nb_y:
-                z[i] = nan
-                continue
-
-        yd = y_ - j0
-        z00 = z_g[i0, j0]
-        z01 = z_g[i0, j1]
-        z10 = z_g[i1, j0]
-        z11 = z_g[i1, j1]
-        if m_g[i0, j0] or m_g[i0, j1] or m_g[i1, j0] or m_g[i1, j1]:
+                masked = True
+            else:
+                masked = False
+            if not masked:
+                if m_g[i0, j0] or m_g[i0, j1] or m_g[i1, j0] or m_g[i1, j1]:
+                    masked = True
+                else:
+                    z00, z01, z10, z11 = (
+                        z_g[i0, j0],
+                        z_g[i0, j1],
+                        z_g[i1, j0],
+                        z_g[i1, j1],
+                    )
+                    masked = False
+            # Need to be stored only on change
+            i0_old, j0_old = i0, j0
+        if masked:
             z[i] = nan
         else:
+            xd = x_ - i0_
+            yd = y_ - j0
             z[i] = (z00 * (1 - xd) + (z10 * xd)) * (1 - yd) + (
                 z01 * (1 - xd) + z11 * xd
             ) * yd
@@ -245,7 +338,14 @@ def flatten_line_matrix(l_matrix):
     """
     nb_line, sampling = l_matrix.shape
     final_size = (nb_line - 1) + nb_line * sampling
+    empty_dataset = False
+    if final_size < 1:
+        empty_dataset = True
+        final_size = 1
     out = empty(final_size, dtype=l_matrix.dtype)
+    if empty_dataset:
+        out[:] = nan
+        return out
     inc = 0
     for i in range(nb_line):
         for j in range(sampling):
@@ -259,22 +359,38 @@ def flatten_line_matrix(l_matrix):
 @njit(cache=True)
 def simplify(x, y, precision=0.1):
     """
-    Will remove all middle point which are closer than precision.
+    Will remove all middle/end points closer than precision.
 
     :param array x:
     :param array y:
-    :param float precision: if two points have distance inferior to precision with remove next point
+    :param float precision: if two points have distance inferior to precision we remove next point
     :return: (x,y)
     :rtype: (array,array)
     """
     precision2 = precision ** 2
     nb = x.shape[0]
-    x_previous, y_previous = x[0], y[0]
+    # will be True for kept values
     mask = ones(nb, dtype=bool_)
-    for i in range(1, nb):
+    for j in range(0, nb):
+        x_previous, y_previous = x[j], y[j]
+        if isnan(x_previous) or isnan(y_previous):
+            mask[j] = False
+            continue
+        break
+    # Only nan
+    if j == (nb - 1):
+        return zeros(0, dtype=x.dtype), zeros(0, dtype=x.dtype)
+
+    last_nan = False
+    for i in range(j + 1, nb):
         x_, y_ = x[i], y[i]
         if isnan(x_) or isnan(y_):
+            if last_nan:
+                mask[i] = False
+            else:
+                last_nan = True
             continue
+        last_nan = False
         d_x = x_ - x_previous
         if d_x > precision:
             x_previous, y_previous = x_, y_
@@ -307,7 +423,7 @@ def split_line(x, y, i):
     :param y: array
     :param i: array of int at each i change, we cut x, y
 
-    :return: x and y separate by nan at each i jump
+    :return: x and y separated by nan at each i jump
     """
     nb_jump = len(where(i[1:] - i[:-1] != 0)[0])
     nb_value = x.shape[0]
@@ -329,11 +445,11 @@ def split_line(x, y, i):
 @njit(cache=True)
 def wrap_longitude(x, y, ref, cut=False):
     """
-    Will wrap contiguous longitude with reference like west bound.
+    Will wrap contiguous longitude with reference as western boundary.
 
     :param array x:
     :param array y:
-    :param float ref: longitude of reference, all the new value will be between ref and ref + 360
+    :param float ref: longitude of reference, all the new values will be between ref and ref + 360
     :param bool cut: if True line will be cut at the bounds
     :return: lon,lat
     :rtype: (array,array)
@@ -441,7 +557,7 @@ def local_to_coordinates(x, y, lon0, lat0):
 @njit(cache=True, fastmath=True)
 def nearest_grd_indice(x, y, x0, y0, xstep, ystep):
     """
-    Get nearest grid indice from a position.
+    Get nearest grid index from a position.
 
     :param x: longitude
     :param y: latitude
@@ -459,7 +575,7 @@ def nearest_grd_indice(x, y, x0, y0, xstep, ystep):
 @njit(cache=True)
 def bbox_indice_regular(vertices, x0, y0, xstep, ystep, N, circular, x_size):
     """
-    Get bbox indice of a contour in a regular grid.
+    Get bbox index of a contour in a regular grid.
 
     :param vertices: vertice of contour
     :param float x0: first grid longitude

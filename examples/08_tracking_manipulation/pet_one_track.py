@@ -2,14 +2,17 @@
 One Track
 ===================
 """
-from matplotlib import pyplot as plt
-from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 import py_eddy_tracker_sample
+from matplotlib import pyplot as plt
+
+from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
 # %%
 # Load experimental atlas, and we select one eddy
 a = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Anticyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path(
+        "eddies_med_adt_allsat_dt2018/Anticyclonic.zarr"
+    )
 )
 eddy = a.extract_ids([9672])
 eddy_f = a.extract_ids([9672])
@@ -35,6 +38,6 @@ ax.set_aspect("equal")
 ax.grid()
 eddy.plot(ax, color="r", lw=0.5, label="track")
 eddy.index(range(0, len(eddy), 40)).display(
-    ax, intern_only=True, label="observations every 40"
+    ax, intern_only=True, label="observations every 40 days"
 )
 ax.legend()

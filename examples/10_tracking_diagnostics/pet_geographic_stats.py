@@ -4,9 +4,10 @@ Geographical statistics
 
 """
 
-from matplotlib import pyplot as plt
-from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 import py_eddy_tracker_sample
+from matplotlib import pyplot as plt
+
+from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
 
 def start_axes(title):
@@ -21,10 +22,12 @@ def start_axes(title):
 # %%
 # Load an experimental med atlas over a period of 26 years (1993-2019), we merge the 2 datasets
 a = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Anticyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path(
+        "eddies_med_adt_allsat_dt2018/Anticyclonic.zarr"
+    )
 )
 c = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
 )
 a = a.merge(c)
 

@@ -3,12 +3,13 @@
 GUI class
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-from matplotlib.projections import register_projection
-from .generic import flatten_line_matrix, split_line
 
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.projections import register_projection
+
+from .generic import flatten_line_matrix, split_line
 
 try:
     from pylook.axes import PlatCarreAxes
@@ -27,7 +28,7 @@ except ImportError:
 
 class GUIAxes(PlatCarreAxes):
     """
-    Axes which will use full space available
+    Axes that uses full space available
     """
 
     name = "full_axes"
@@ -88,7 +89,7 @@ class GUI:
             t0_, t1_ = dataset.period
             t0, t1 = min(t0, t0_), max(t1, t1_)
 
-        self.settings = dict(period=(t0, t1), now=t1,)
+        self.settings = dict(period=(t0, t1), now=t1)
 
     @property
     def now(self):
@@ -144,6 +145,11 @@ class GUI:
             )
         # param
         self.param_ax = self.figure.add_axes((0, 0, 1, 0.15), facecolor="0.2")
+
+    def hide_path(self, state):
+        for name in self.datasets:
+            self.m[name]["path_previous"].set_visible(state)
+            self.m[name]["path_future"].set_visible(state)
 
     def draw(self):
         self.m["mini_ax"] = self.figure.add_axes((0.3, 0.85, 0.4, 0.15), zorder=80)

@@ -2,6 +2,7 @@
 [![Documentation Status](https://readthedocs.org/projects/py-eddy-tracker/badge/?version=stable)](https://py-eddy-tracker.readthedocs.io/en/stable/?badge=stable)
 [![Gitter](https://badges.gitter.im/py-eddy-tracker/community.svg)](https://gitter.im/py-eddy-tracker/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge) 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/AntSimi/py-eddy-tracker/master?urlpath=lab/tree/notebooks/python_module/)
+[![pytest](https://github.com/AntSimi/py-eddy-tracker/actions/workflows/python-app.yml/badge.svg)](https://github.com/AntSimi/py-eddy-tracker/actions/workflows/python-app.yml)
 
 # README #
 
@@ -19,6 +20,12 @@ Method is used in :
 
 ### How do I get set up? ###
 
+#### Short story ####
+```bash
+pip install pyeddytracker
+```
+#### Long story ####
+
 To avoid problems with installation, use of the virtualenv Python virtual environment is recommended.
 
 Then use pip to install all dependencies (numpy, scipy, matplotlib, netCDF4, ...), e.g.:
@@ -35,7 +42,7 @@ python setup.py install
 ### Tools gallery ###
 Several examples based on py eddy tracker module are [here](https://py-eddy-tracker.readthedocs.io/en/latest/python_module/index.html).
 
-![](https://py-eddy-tracker.readthedocs.io/en/latest/_static/logo.png)
+[![](https://py-eddy-tracker.readthedocs.io/en/latest/_static/logo.png)](https://py-eddy-tracker.readthedocs.io/en/latest/python_module/index.html)
 
 ### Quick use ###
 

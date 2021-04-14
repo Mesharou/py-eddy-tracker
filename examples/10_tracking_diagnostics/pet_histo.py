@@ -3,18 +3,21 @@ Parameter Histogram
 ===================
 
 """
-from matplotlib import pyplot as plt
-from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 import py_eddy_tracker_sample
+from matplotlib import pyplot as plt
 from numpy import arange
+
+from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
 # %%
 # Load an experimental med atlas over a period of 26 years (1993-2019)
 a = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Anticyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path(
+        "eddies_med_adt_allsat_dt2018/Anticyclonic.zarr"
+    )
 )
 c = TrackEddiesObservations.load_file(
-    py_eddy_tracker_sample.get_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
+    py_eddy_tracker_sample.get_demo_path("eddies_med_adt_allsat_dt2018/Cyclonic.zarr")
 )
 kwargs_a = dict(label="Anticyclonic", color="r", histtype="step", density=True)
 kwargs_c = dict(label="Cyclonic", color="b", histtype="step", density=True)
@@ -25,7 +28,7 @@ fig = plt.figure(figsize=(12, 7))
 
 for x0, name, title, xmax, factor, bins in zip(
     (0.4, 0.72, 0.08),
-    ("radius_s", "speed_average", "amplitude"),
+    ("speed_radius", "speed_average", "amplitude"),
     ("Speed radius (km)", "Speed average (cm/s)", "Amplitude (cm)"),
     (100, 50, 20),
     (0.001, 100, 100),

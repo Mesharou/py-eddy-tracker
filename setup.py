@@ -9,6 +9,7 @@ with open("requirements.txt", "r") as fh:
 
 setup(
     name="pyEddyTracker",
+    python_requires=">=3.7",
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
     description="Py-Eddy-Tracker libraries",
@@ -27,7 +28,6 @@ setup(
     scripts=[
         "src/scripts/EddySubSetter",
         "src/scripts/EddyTranslate",
-        "src/scripts/EddyTracking",
         "src/scripts/EddyFinalTracking",
         "src/scripts/EddyMergeCorrespondances",
     ],
@@ -42,9 +42,12 @@ setup(
             "EddyFrequency = py_eddy_tracker.appli.eddies:get_frequency_grid",
             "EddyInfos = py_eddy_tracker.appli.eddies:display_infos",
             "EddyCircle = py_eddy_tracker.appli.eddies:eddies_add_circle",
+            "EddyTracking = py_eddy_tracker.appli.eddies:eddies_tracking",
+            "EddyQuickCompare = py_eddy_tracker.appli.eddies:quick_compare",
             # network
             "EddyNetworkGroup = py_eddy_tracker.appli.network:build_network",
             "EddyNetworkBuildPath = py_eddy_tracker.appli.network:divide_network",
+            "EddyNetworkSubSetter = py_eddy_tracker.appli.network:subset_network",
             # anim/gui
             "EddyAnim = py_eddy_tracker.appli.gui:anim",
             "GUIEddy = py_eddy_tracker.appli.gui:guieddy",

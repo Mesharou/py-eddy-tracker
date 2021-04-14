@@ -1,63 +1,61 @@
-from ..observations.observation import EddiesObservations as Model
-from ..dataset.grid import RegularGridDataset
-from numpy import where, bincount, ones, unique, bool_, arange
-from numba import njit
 from os import path
+
+from numba import njit
+from numpy import arange, bincount, bool_, ones, unique, where
+
+from ..dataset.grid import RegularGridDataset
+from ..observations.observation import EddiesObservations as Model
 
 
 class CheltonTracker(Model):
-    GROUND = RegularGridDataset(path.join(path.dirname(__file__), '../data/mask_1_60.nc'), 'lon', 'lat')
+
+    __slots__ = tuple()
+
+    GROUND = RegularGridDataset(
+        path.join(path.dirname(__file__), "../data/mask_1_60.nc"), "lon", "lat"
+    )
 
     @staticmethod
     def cost_function(records_in, records_out, distance):
-        """We minimize on distance between two obs
-        """
+        """We minimize on distance between two obs"""
         return distance
 
     def mask_function(self, other, distance):
-        """We mask link with ellips and ratio
-        """
-        # Compute Parameter of ellips
+        """We mask link with ellipse and ratio"""
+        # Compute Parameter of ellipse
         minor, major = 1.05, 1.5
-        y = self.basic_formula_ellips_major_axis(
-            self.obs['lat'],
-            degrees=True,
-            c0=minor,
-            cmin=minor,
-            cmax=major,
-            lat1=23,
-            lat2=5,
+        y = self.basic_formula_ellipse_major_axis(
+            self.lat, degrees=True, c0=minor, cmin=minor, cmax=major, lat1=23, lat2=5
         )
-        # mask from ellips
+        # mask from ellipse
         mask = self.shifted_ellipsoid_degrees_mask(
-            other,
-            minor=minor,  # Minor can be bigger than major??
-            major=y)
+            other, minor=minor, major=y  # Minor can be bigger than major??
+        )
 
         # We check ratio (maybe not usefull)
-        check_ratio(mask, self.obs['amplitude'], other.obs['amplitude'], self.obs['radius_e'], other.obs['radius_e'])
+        check_ratio(
+            mask, self.amplitude, other.amplitude, self.radius_e, other.radius_e
+        )
         indexs_closest = where(mask)
-        mask[indexs_closest] = self.across_ground(self.obs[indexs_closest[0]], other.obs[indexs_closest[1]])
+        mask[indexs_closest] = self.across_ground(
+            self.obs[indexs_closest[0]], other.obs[indexs_closest[1]]
+        )
         return mask
 
     @classmethod
     def across_ground(cls, record0, record1):
         i, j, d_pix = cls.GROUND.compute_pixel_path(
-            x0=record0['lon'],
-            y0=record0['lat'],
-            x1=record1['lon'],
-            y1=record1['lat'],
+            x0=record0["lon"], y0=record0["lat"], x1=record1["lon"], y1=record1["lat"]
         )
 
-        data = cls.GROUND.grid('mask')[i, j]
+        data = cls.GROUND.grid("mask")[i, j]
         i_ground = unique(arange(len(record0)).repeat(d_pix + 1)[data == 1])
-        mask = ones(record1.shape, dtype='bool')
+        mask = ones(record1.shape, dtype="bool")
         mask[i_ground] = False
         return mask
 
     def solve_function(self, cost_matrix):
-        """Give the best link for each self obs
-        """
+        """Give the best link for each self obs"""
         return where(self.solve_first(cost_matrix, multiple_link=True))
 
     def post_process_link(self, other, i_self, i_other):
@@ -70,7 +68,7 @@ class CheltonTracker(Model):
             for i in where(nb_link > 1)[0]:
                 m = i == i_other
                 multiple_in = i_self[m]
-                i_keep = self.obs['amplitude'][multiple_in].argmax()
+                i_keep = self.amplitude[multiple_in].argmax()
                 m[where(m)[0][i_keep]] = False
                 mask[m] = False
 
@@ -80,7 +78,9 @@ class CheltonTracker(Model):
 
 
 @njit(cache=True)
-def check_ratio(current_mask, self_amplitude, other_amplitude, self_radius, other_radius):
+def check_ratio(
+    current_mask, self_amplitude, other_amplitude, self_radius, other_radius
+):
     """
     Only very few case are remove with selection
 

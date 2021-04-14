@@ -5,9 +5,10 @@ Get mean of grid in each eddies
 """
 
 from matplotlib import pyplot as plt
+
+from py_eddy_tracker import data
 from py_eddy_tracker.dataset.grid import RegularGridDataset
 from py_eddy_tracker.observations.observation import EddiesObservations
-from py_eddy_tracker import data
 
 
 # %%
@@ -29,11 +30,13 @@ def update_axes(ax, mappable=None):
 
 # %%
 # Load detection files and data to interp
-a = EddiesObservations.load_file(data.get_path("Anticyclonic_20160515.nc"))
-c = EddiesObservations.load_file(data.get_path("Cyclonic_20160515.nc"))
+a = EddiesObservations.load_file(data.get_demo_path("Anticyclonic_20160515.nc"))
+c = EddiesObservations.load_file(data.get_demo_path("Cyclonic_20160515.nc"))
 
 aviso_map = RegularGridDataset(
-    data.get_path("dt_med_allsat_phy_l4_20160515_20190101.nc"), "longitude", "latitude"
+    data.get_demo_path("dt_med_allsat_phy_l4_20160515_20190101.nc"),
+    "longitude",
+    "latitude",
 )
 aviso_map.add_uv("adt")
 
@@ -55,8 +58,8 @@ update_axes(ax, m)
 # Get mean of eke in each effective contour
 
 ax = start_axes("EKE mean (cm²/s²)")
-a.display(ax, color="r", linewidth=0.5, label="Anticyclonic", ref=-10)
-c.display(ax, color="b", linewidth=0.5, label="Cyclonic", ref=-10)
+a.display(ax, color="r", linewidth=0.5, label="Anticyclonic ({nb_obs} eddies)", ref=-10)
+c.display(ax, color="b", linewidth=0.5, label="Cyclonic ({nb_obs} eddies)", ref=-10)
 eke = a.interp_grid(aviso_map, "eke", method="mean", intern=False)
 a.filled(ax, eke, ref=-10, **eke_kwargs)
 eke = c.interp_grid(aviso_map, "eke", method="mean", intern=False)

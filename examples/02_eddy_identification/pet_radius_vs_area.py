@@ -4,17 +4,16 @@ Radius vs area
 
 """
 from matplotlib import pyplot as plt
-from py_eddy_tracker.observations.observation import EddiesObservations
+from numpy import array, pi
+
 from py_eddy_tracker import data
-
-from py_eddy_tracker.poly import poly_area
 from py_eddy_tracker.generic import coordinates_to_local
-from numpy import pi, array
-
+from py_eddy_tracker.observations.observation import EddiesObservations
+from py_eddy_tracker.poly import poly_area
 
 # %%
 # Load detection files
-a = EddiesObservations.load_file(data.get_path("Anticyclonic_20190223.nc"))
+a = EddiesObservations.load_file(data.get_demo_path("Anticyclonic_20190223.nc"))
 areas = list()
 # For each contour area will be compute in local reference
 for i in a:
@@ -32,7 +31,7 @@ ax.set_aspect("equal")
 ax.grid()
 ax.set_xlabel("Speed radius computed with fit_circle")
 ax.set_ylabel("Radius deduced from area\nof contour_lon_s/contour_lat_s")
-ax.set_title('Area vs radius')
+ax.set_title("Area vs radius")
 ax.plot(a["radius_s"] / 1000.0, (areas / pi) ** 0.5 / 1000.0, ".")
 ax.plot((0, 250), (0, 250), "r")
 
@@ -46,4 +45,4 @@ ax.grid()
 ax.set_xlabel("Radius ratio")
 ax.set_ylabel("Shape error")
 ax.set_title("err = f(radius_ratio)")
-ax.plot(a["radius_s"] / (areas / pi) ** .5 , a['shape_error_s'], ".")
+ax.plot(a["radius_s"] / (areas / pi) ** 0.5, a["shape_error_s"], ".")

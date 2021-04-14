@@ -3,19 +3,28 @@
 Entry point of graphic user interface
 """
 
-from numpy import arange, empty, where
+import logging
+from datetime import datetime, timedelta
+from itertools import chain
+
 from matplotlib import pyplot
+from matplotlib.animation import FuncAnimation
+from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
-from datetime import datetime
-from ..poly import create_vertice
-from ..generic import flatten_line_matrix
+from numpy import arange, where
+
 from .. import EddyParser
-from ..observations.tracking import TrackEddiesObservations
 from ..gui import GUI
+from ..observations.tracking import TrackEddiesObservations
+from ..poly import create_vertice
+
+logger = logging.getLogger("pet")
 
 
 class Anim:
-    def __init__(self, eddy, intern=False, sleep_event=0.1, graphic_information=False, **kwargs):
+    def __init__(
+        self, eddy, intern=False, sleep_event=0.1, graphic_information=False, **kwargs
+    ):
         self.eddy = eddy
         x_name, y_name = eddy.intern(intern)
         self.t, self.x, self.y = eddy.time, eddy[x_name], eddy[y_name]
@@ -25,29 +34,74 @@ class Anim:
         self.period = self.eddy.period
         self.sleep_event = sleep_event
         self.mappables = list()
+        self.field_color = None
+        self.field_txt = None
+        self.time_field = False
+        self.txt = None
+        self.ax = None
+        self.kw_label = dict()
         self.setup(**kwargs)
 
-    def setup(self, cmap="jet", nb_step=25, figsize=(8, 6), **kwargs):
-        cmap = pyplot.get_cmap(cmap)
-        self.colors = cmap(arange(nb_step + 1) / nb_step)
+    def setup(
+        self,
+        cmap="jet",
+        lut=None,
+        field_color="time",
+        field_txt="track",
+        range_color=(None, None),
+        nb_step=25,
+        figsize=(8, 6),
+        position=(0.05, 0.05, 0.9, 0.9),
+        **kwargs,
+    ):
+        self.kw_label["fontsize"] = kwargs.pop("fontsize", 12)
+        self.kw_label["fontweight"] = kwargs.pop("fontweight", "demibold")
+        # To text each visible eddy
+        if field_txt:
+            self.field_txt = self.eddy[field_txt]
+        if field_color:
+            # To color each visible eddy
+            self.field_color = self.eddy[field_color].astype("f4")
+            rg = range_color
+            if rg[0] is None and rg[1] is None and field_color == "time":
+                self.time_field = True
+            else:
+                rg = (
+                    self.field_color.min() if rg[0] is None else rg[0],
+                    self.field_color.max() if rg[1] is None else rg[1],
+                )
+                self.field_color = (self.field_color - rg[0]) / (rg[1] - rg[0])
+            self.colors = pyplot.get_cmap(cmap, lut=lut)
         self.nb_step = nb_step
 
-        x_min, x_max = self.x_core.min() - 2, self.x_core.max() + 2
-        d_x = x_max - x_min
-        y_min, y_max = self.y_core.min() - 2, self.y_core.max() + 2
-        d_y = y_max - y_min
         # plot
-        self.fig = pyplot.figure(figsize=figsize, **kwargs)
+        if "figure" in kwargs:
+            self.fig = kwargs.pop("figure")
+        else:
+            self.fig = pyplot.figure(figsize=figsize, **kwargs)
         t0, t1 = self.period
         self.fig.suptitle(f"{t0} -> {t1}")
-        self.ax = self.fig.add_axes((0.05, 0.05, 0.9, 0.9))
-        self.ax.set_xlim(x_min, x_max), self.ax.set_ylim(y_min, y_max)
-        self.ax.set_aspect("equal")
-        self.ax.grid()
-        # init mappable
-        self.txt = self.ax.text(x_min + 0.05 * d_x, y_min + 0.05 * d_y, "", zorder=10)
+        if isinstance(position, Axes):
+            self.ax = position
+        else:
+            x_min, x_max = self.x_core.min() - 2, self.x_core.max() + 2
+            d_x = x_max - x_min
+            y_min, y_max = self.y_core.min() - 2, self.y_core.max() + 2
+            d_y = y_max - y_min
+            self.ax = self.fig.add_axes(position, projection="full_axes")
+            self.ax.set_xlim(x_min, x_max), self.ax.set_ylim(y_min, y_max)
+            self.ax.set_aspect("equal")
+            self.ax.grid()
+            self.txt = self.ax.text(
+                x_min + 0.05 * d_x, y_min + 0.05 * d_y, "", zorder=10
+            )
         self.segs = list()
-        self.contour = LineCollection([], zorder=1)
+        self.t_segs = list()
+        self.c_segs = list()
+        if field_color is None:
+            self.contour = LineCollection([], zorder=1, color="gray")
+        else:
+            self.contour = LineCollection([], zorder=1)
         self.ax.add_collection(self.contour)
 
         self.fig.canvas.draw()
@@ -85,8 +139,9 @@ class Anim:
                     if dt < 0:
                         # self.sleep_event = dt_draw * 1.01
                         dt = 1e-10
+                if dt == 0:
+                    dt = 1e-10
                 self.fig.canvas.start_event_loop(dt)
-
                 if self.now > t1:
                     break
             if infinity_loop:
@@ -113,32 +168,63 @@ class Anim:
 
     def update(self):
         m = self.t == self.now
+        color = self.field_color is not None
         if m.sum():
-            self.segs.append(
-                create_vertice(
-                    flatten_line_matrix(self.x[m]), flatten_line_matrix(self.y[m])
+            segs = list()
+            t = list()
+            c = list()
+            for i in where(m)[0]:
+                segs.append(create_vertice(self.x[i], self.y[i]))
+                if color:
+                    c.append(self.field_color[i])
+                t.append(self.now)
+            self.segs.append(segs)
+            if color:
+                self.c_segs.append(c)
+            self.t_segs.append(t)
+        self.contour.set_paths(chain(*self.segs))
+        if color:
+            if self.time_field:
+                self.contour.set_color(
+                    self.colors(
+                        [
+                            (self.nb_step - self.now + i) / self.nb_step
+                            for i in chain(*self.c_segs)
+                        ]
+                    )
                 )
-            )
-        else:
-            self.segs.append(empty((0, 2)))
-        self.contour.set_paths(self.segs)
-        self.contour.set_color(self.colors[-len(self.segs) :])
-        self.contour.set_lw(arange(len(self.segs)) / len(self.segs) * 2.5)
-        txt = f"{self.now}"
-        if self.graphic_informations:
-            txt += f"- {1/self.sleep_event:.0f} frame/s"
-        self.txt.set_text(txt)
-        for i in where(m)[0]:
-            mappable = self.ax.text(
-                self.x_core[i], self.y_core[i], self.track[i], fontsize=8
-            )
-            self.mappables.append(mappable)
-            self.ax.draw_artist(mappable)
+            else:
+                self.contour.set_color(self.colors(list(chain(*self.c_segs))))
+        # linewidth will be link to time delay
+        self.contour.set_lw(
+            [
+                (1 - (self.now - i) / self.nb_step) * 2.5 if i <= self.now else 0
+                for i in chain(*self.t_segs)
+            ]
+        )
+        # Update date txt and info
+        if self.txt is not None:
+            txt = f"{(timedelta(int(self.now)) + datetime(1950,1,1)).strftime('%Y/%m/%d')}"
+            if self.graphic_informations:
+                txt += f"- {1/self.sleep_event:.0f} frame/s"
+            self.txt.set_text(txt)
+            self.ax.draw_artist(self.txt)
+        # Update id txt
+        if self.field_txt is not None:
+            for i in where(m)[0]:
+                mappable = self.ax.text(
+                    self.x_core[i], self.y_core[i], self.field_txt[i], **self.kw_label
+                )
+                self.mappables.append(mappable)
+                self.ax.draw_artist(mappable)
         self.ax.draw_artist(self.contour)
-        self.ax.draw_artist(self.txt)
+
         # Remove first segment to keep only T contour
         if len(self.segs) > self.nb_step:
             self.segs.pop(0)
+            self.t_segs.pop(0)
+            if color:
+                self.c_segs.pop(0)
 
     def draw_contour(self):
         # select contour for this time step
@@ -161,8 +247,13 @@ class Anim:
         elif event.key == "right" and self.pause:
             self.next()
         elif event.key == "left" and self.pause:
+            # we remove 2 step to add 1 so we rewind of only one
             self.segs.pop(-1)
             self.segs.pop(-1)
+            self.t_segs.pop(-1)
+            self.t_segs.pop(-1)
+            self.c_segs.pop(-1)
+            self.c_segs.pop(-1)
             self.prev()
 
 
@@ -173,11 +264,7 @@ def anim():
     )
     parser.add_argument("filename", help="eddy atlas")
     parser.add_argument("id", help="Track id to anim", type=int, nargs="*")
-    parser.add_argument(
-        "--intern",
-        action="store_true",
-        help="display intern contour inplace of outter contour",
-    )
+    parser.contour_intern_arg()
     parser.add_argument(
         "--keep_step", default=25, help="number maximal of step displayed", type=int
     )
@@ -192,31 +279,74 @@ def anim():
     parser.add_argument(
         "--infinity_loop", action="store_true", help="Press Escape key to stop loop"
     )
+    parser.add_argument(
+        "--first_centered",
+        action="store_true",
+        help="Longitude will be centered on first obs.",
+    )
+    parser.add_argument(
+        "--field", default="time", help="Field use to color contour instead of time"
+    )
+    parser.add_argument("--txt_field", default="track", help="Field use to text eddy")
+    parser.add_argument(
+        "--vmin", default=None, type=float, help="Inferior bound to color contour"
+    )
+    parser.add_argument(
+        "--vmax", default=None, type=float, help="Upper bound to color contour"
+    )
+    parser.add_argument("--mp4", help="Filename to save animation (mp4)")
     args = parser.parse_args()
-    variables = ["time", "track", "longitude", "latitude"]
+    variables = list(
+        set(["time", "track", "longitude", "latitude", args.field, args.txt_field])
+    )
     variables.extend(TrackEddiesObservations.intern(args.intern, public_label=True))
 
-    eddies = TrackEddiesObservations.load_file(args.filename, include_vars=variables)
+    eddies = TrackEddiesObservations.load_file(
+        args.filename, include_vars=set(variables)
+    )
     if not args.all:
         if len(args.id) == 0:
             raise Exception(
                 "You need to specify id to display or ask explicity all with --all option"
             )
         eddies = eddies.extract_ids(args.id)
+    if args.first_centered:
+        # TODO: include to observation class
+        x0 = eddies.lon[0]
+        eddies.lon[:] = (eddies.lon - x0 + 180) % 360 + x0 - 180
+        eddies.contour_lon_e[:] = (
+            (eddies.contour_lon_e.T - eddies.lon + 180) % 360 + eddies.lon - 180
+        ).T
+
+    kw = dict()
+    if args.mp4:
+        kw["figsize"] = (16, 9)
+        kw["dpi"] = 120
     a = Anim(
         eddies,
         intern=args.intern,
         sleep_event=args.time_sleep,
         cmap=args.cmap,
         nb_step=args.keep_step,
+        field_color=args.field,
+        field_txt=args.txt_field,
+        range_color=(args.vmin, args.vmax),
+        graphic_information=logger.getEffectiveLevel() == logging.DEBUG,
+        **kw,
     )
-    a.show(infinity_loop=args.infinity_loop)
+    if args.mp4 is None:
+        a.show(infinity_loop=args.infinity_loop)
+    else:
+        kwargs = dict(frames=arange(*a.period), interval=50)
+        ani = FuncAnimation(a.fig, a.func_animation, **kwargs)
+        ani.save(args.mp4, fps=30, extra_args=["-vcodec", "libx264"])
 
 
 def gui_parser():
     parser = EddyParser("Eddy atlas GUI")
     parser.add_argument("atlas", nargs="+")
     parser.add_argument("--med", action="store_true")
+    parser.add_argument("--nopath", action="store_true", help="Don't draw path")
     return parser.parse_args()
 
 
@@ -228,4 +358,5 @@ def guieddy():
     g = GUI(**atlas)
     if args.med:
         g.med()
+    g.hide_path(not args.nopath)
     g.show()

@@ -20,10 +20,11 @@ Email: evanmason@gmail.com
 
 """
 
-from argparse import ArgumentParser
 import logging
-import numpy
+from argparse import ArgumentParser
+
 import zarr
+
 from ._version import get_versions
 
 __version__ = get_versions()["version"]
@@ -68,22 +69,34 @@ class ColoredFormatter(logging.Formatter):
 
 
 class EddyParser(ArgumentParser):
-    """General parser for applications
-    """
+    """General parser for applications"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_base_argument()
 
     def add_base_argument(self):
-        """Base arguments
-        """
+        """Base arguments"""
         self.add_argument(
             "-v",
             "--verbose",
             dest="logging_level",
             default="ERROR",
             help="Levels : DEBUG, INFO, WARNING," " ERROR, CRITICAL",
+        )
+
+    def memory_arg(self):
+        self.add_argument(
+            "--memory",
+            action="store_true",
+            help="Load file in memory before to read with netCDF library",
+        )
+
+    def contour_intern_arg(self):
+        self.add_argument(
+            "--intern",
+            action="store_true",
+            help="Use intern contour instead of outter contour",
         )
 
     def parse_args(self, *args, **kwargs):
@@ -119,7 +132,7 @@ VAR_DESCR = dict(
         nc_dims=("obs",),
         nc_attr=dict(
             long_name="Rotating sense of the eddy",
-            comment="Cyclonic -1; Anti-cyclonic +1",
+            comment="Cyclonic -1; Anticyclonic +1",
         ),
     ),
     segment_size=dict(
@@ -148,12 +161,9 @@ VAR_DESCR = dict(
         nc_name="distance_next",
         nc_type="float32",
         output_type="uint16",
-        scale_factor=50.,
+        scale_factor=50.0,
         nc_dims=("obs",),
-        nc_attr=dict(
-            long_name="Distance to next position",
-            units='m',
-        ),
+        nc_attr=dict(long_name="Distance to next position", units="m"),
     ),
     virtual=dict(
         attr_name=None,
@@ -187,7 +197,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             units="degrees_east",
             axis="X",
-            comment="Longitude center of the fitted circle",
+            comment="Longitude center of the best fit circle",
             long_name="Eddy Center Longitude",
             standard_name="longitude",
         ),
@@ -204,7 +214,7 @@ VAR_DESCR = dict(
             axis="Y",
             long_name="Eddy Center Latitude",
             standard_name="latitude",
-            comment="Latitude center of the fitted circle",
+            comment="Latitude center of the best fit circle",
         ),
     ),
     lon_max=dict(
@@ -219,6 +229,7 @@ VAR_DESCR = dict(
             axis="X",
             long_name="Longitude of the SSH maximum",
             standard_name="longitude",
+            comment="Longitude of the inner contour",
         ),
     ),
     lat_max=dict(
@@ -233,6 +244,7 @@ VAR_DESCR = dict(
             axis="Y",
             long_name="Latitude of the SSH maximum",
             standard_name="latitude",
+            comment="Latitude of the inner contour",
         ),
     ),
     amplitude=dict(
@@ -258,7 +270,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             long_name="Speed area",
             units="m^2",
-            comment="Area enclosed by speed contour in m^2",
+            comment="Area enclosed by the speed contour in m^2",
         ),
     ),
     effective_area=dict(
@@ -269,7 +281,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             long_name="Effective area",
             units="m^2",
-            comment="Area enclosed by effective contour in m^2",
+            comment="Area enclosed by the effective contour in m^2",
         ),
     ),
     speed_average=dict(
@@ -297,7 +309,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             long_name="Radial Speed Profile",
             units="m/s",
-            comment="Speed average values from effective contour inwards to smallest contour, evenly spaced points",
+            comment="Speed averaged values from the effective contour inwards to the smallest contour, evenly spaced points",
         ),
     ),
     i=dict(
@@ -305,18 +317,14 @@ VAR_DESCR = dict(
         nc_name="i",
         nc_type="uint16",
         nc_dims=("obs",),
-        nc_attr=dict(
-            long_name="Longitude index in the grid of the detection",
-        ),
+        nc_attr=dict(long_name="Longitude index in the grid of the detection"),
     ),
     j=dict(
         attr_name="j",
         nc_name="j",
         nc_type="uint16",
         nc_dims=("obs",),
-        nc_attr=dict(
-            long_name="Latitude index in the grid of the detection",
-        ),
+        nc_attr=dict(long_name="Latitude index in the grid of the detection"),
     ),
     eke=dict(
         attr_name="eke",
@@ -340,7 +348,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             long_name="Effective Radius",
             units="m",
-            comment="Radius of a circle whose area is equal to that enclosed by the effective contour",
+            comment="Radius of the best fit circle corresponding to the effective contour",
         ),
     ),
     radius_s=dict(
@@ -354,8 +362,7 @@ VAR_DESCR = dict(
         nc_attr=dict(
             long_name="Speed Radius",
             units="m",
-            comment="Radius of a circle whose area is equal to that "
-                    "enclosed by the contour of maximum circum-average speed",
+            comment="Radius of the best fit circle corresponding to the contour of maximum circum-average speed",
         ),
     ),
     track=dict(
@@ -365,18 +372,56 @@ VAR_DESCR = dict(
         nc_type="uint32",
         nc_dims=("obs",),
         nc_attr=dict(
-            long_name="Trajectory number",
-            comment="Trajectory identification number",
+            long_name="Trajectory number", comment="Trajectory identification number"
         ),
     ),
-    sub_track=dict(
+    segment=dict(
         attr_name=None,
-        nc_name="sub_track",
+        nc_name="segment",
         nc_type="uint32",
         nc_dims=("obs",),
         nc_attr=dict(
-            long_name="Segment Number",
-            comment="Segment number inside a group",
+            long_name="Segment Number", comment="Segment number inside a group"
+        ),
+    ),
+    previous_obs=dict(
+        attr_name=None,
+        nc_name="previous_obs",
+        nc_type="int32",
+        nc_dims=("obs",),
+        nc_attr=dict(
+            long_name="Previous observation index",
+            comment="Index of previous observation in a spliting case",
+        ),
+    ),
+    next_obs=dict(
+        attr_name=None,
+        nc_name="next_obs",
+        nc_type="int32",
+        nc_dims=("obs",),
+        nc_attr=dict(
+            long_name="Next observation index",
+            comment="Index of next observation in a merging case",
+        ),
+    ),
+    previous_cost=dict(
+        attr_name=None,
+        nc_name="previous_cost",
+        nc_type="float32",
+        nc_dims=("obs",),
+        nc_attr=dict(
+            long_name="Previous cost for previous observation",
+            comment="",
+        ),
+    ),
+    next_cost=dict(
+        attr_name=None,
+        nc_name="next_cost",
+        nc_type="float32",
+        nc_dims=("obs",),
+        nc_attr=dict(
+            long_name="Next cost for next observation",
+            comment="",
         ),
     ),
     n=dict(
@@ -397,8 +442,8 @@ VAR_DESCR = dict(
         nc_type="f4",
         filters=[zarr.Delta("i2")],
         output_type="i2",
-        scale_factor=numpy.float32(0.01),
-        add_offset=180,
+        scale_factor=0.01,
+        add_offset=180.0,
         nc_dims=("obs", "NbSample"),
         nc_attr=dict(
             long_name="Effective Contour Longitudes",
@@ -414,7 +459,7 @@ VAR_DESCR = dict(
         nc_type="f4",
         filters=[zarr.Delta("i2")],
         output_type="i2",
-        scale_factor=numpy.float32(0.01),
+        scale_factor=0.01,
         nc_dims=("obs", "NbSample"),
         nc_attr=dict(
             long_name="Effective Contour Latitudes",
@@ -429,9 +474,9 @@ VAR_DESCR = dict(
         nc_type="u2",
         nc_dims=("obs",),
         nc_attr=dict(
-            longname="number of point for effective contour",
+            long_name="number of points for effective contour",
             units="ordinal",
-            description="Number of point for effective contour, if greater than NbSample, there is a resampling",
+            description="Number of points for effective contour before resampling",
         ),
     ),
     contour_lon_s=dict(
@@ -441,8 +486,8 @@ VAR_DESCR = dict(
         nc_type="f4",
         filters=[zarr.Delta("i2")],
         output_type="i2",
-        scale_factor=numpy.float32(0.01),
-        add_offset=180,
+        scale_factor=0.01,
+        add_offset=180.0,
         nc_dims=("obs", "NbSample"),
         nc_attr=dict(
             long_name="Speed Contour Longitudes",
@@ -458,7 +503,7 @@ VAR_DESCR = dict(
         nc_type="f4",
         filters=[zarr.Delta("i2")],
         output_type="i2",
-        scale_factor=numpy.float32(0.01),
+        scale_factor=0.01,
         nc_dims=("obs", "NbSample"),
         nc_attr=dict(
             long_name="Speed Contour Latitudes",
@@ -473,9 +518,9 @@ VAR_DESCR = dict(
         nc_type="u2",
         nc_dims=("obs",),
         nc_attr=dict(
-            longname="number of point for speed contour",
+            long_name="number of points for speed contour",
             units="ordinal",
-            description="Number of point for speed contour, if greater than NbSample, there is a resampling",
+            description="Number of points for speed contour before resampling",
         ),
     ),
     shape_error_e=dict(
@@ -488,8 +533,8 @@ VAR_DESCR = dict(
         nc_dims=("obs",),
         nc_attr=dict(
             units="%",
-            comment="Error criterion between the effective contour and its fit with the circle of same effective radius",
-            long_name="Effective Contour Error",
+            comment="Error criterion between the effective contour and its best fit circle",
+            long_name="Effective Contour Shape Error",
         ),
     ),
     score=dict(
@@ -499,7 +544,7 @@ VAR_DESCR = dict(
         output_type="u1",
         scale_factor=0.4,
         nc_dims=("obs",),
-        nc_attr=dict(units="%", comment="score", long_name="Score",),
+        nc_attr=dict(units="%", comment="score", long_name="Score"),
     ),
     index_other=dict(
         attr_name=None,
@@ -522,8 +567,8 @@ VAR_DESCR = dict(
         nc_dims=("obs",),
         nc_attr=dict(
             units="%",
-            comment="Error criterion between the speed contour and its fit with the circle of same speed radius",
-            long_name="Speed Contour Error",
+            comment="Error criterion between the speed contour and its best fit circle",
+            long_name="Speed Contour Shape Error",
         ),
     ),
     height_max_speed_contour=dict(
@@ -568,7 +613,7 @@ VAR_DESCR = dict(
         old_nc_name=["Chl"],
         nc_type="f4",
         nc_dims=("obs",),
-        nc_attr=dict(long_name="Log base 10 chlorophyll", units="Log(Chl/[mg/m^3])",),
+        nc_attr=dict(long_name="Log base 10 chlorophyll", units="Log(Chl/[mg/m^3])"),
     ),
     dchl=dict(
         attr_name=None,
@@ -588,7 +633,8 @@ VAR_DESCR = dict(
         nc_type="f4",
         nc_dims=("obs",),
         nc_attr=dict(
-            long_name="Log base 10 background chlorophyll", units="Log(Chl/[mg/m^3])",
+            long_name="Log base 10 background chlorophyll",
+            units="Log(Chl/[mg/m^3])",
         ),
     ),
     year=dict(
@@ -597,7 +643,7 @@ VAR_DESCR = dict(
         old_nc_name=["Year"],
         nc_type="u2",
         nc_dims=("obs",),
-        nc_attr=dict(long_name="Year", units="year",),
+        nc_attr=dict(long_name="Year", units="year"),
     ),
     month=dict(
         attr_name=None,
@@ -605,7 +651,7 @@ VAR_DESCR = dict(
         old_nc_name=["Month"],
         nc_type="u1",
         nc_dims=("obs",),
-        nc_attr=dict(long_name="Month", units="month",),
+        nc_attr=dict(long_name="Month", units="month"),
     ),
     day=dict(
         attr_name=None,
@@ -613,7 +659,7 @@ VAR_DESCR = dict(
         old_nc_name=["Day"],
         nc_type="u1",
         nc_dims=("obs",),
-        nc_attr=dict(long_name="Day", units="day",),
+        nc_attr=dict(long_name="Day", units="day"),
     ),
     nb_contour_selected=dict(
         attr_name=None,

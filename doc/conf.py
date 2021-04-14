@@ -54,13 +54,11 @@ intersphinx_mapping = {
 sphinx_gallery_conf = {
     "examples_dirs": "../examples",  # path to your example scripts
     "gallery_dirs": "python_module",
-    "capture_repr": ("_repr_html_",),
+    "capture_repr": ("_repr_html_", "__repr__"),
     "backreferences_dir": "gen_modules/backreferences",
     "doc_module": ("py_eddy_tracker",),
     "reference_url": {
         "py_eddy_tracker": None,
-        "matplotlib": "https://matplotlib.org/",
-        "numpy": "https://docs.scipy.org/doc/numpy/",
     },
     "line_numbers": False,
     "filename_pattern": "/pet",
@@ -71,7 +69,7 @@ sphinx_gallery_conf = {
         "repo": "py-eddy-tracker",
         "branch": "master",
         "binderhub_url": "https://mybinder.org",
-        "dependencies": ["../requirements.txt"],
+        "dependencies": ["environment.yml"],
         # Optional keys
         "use_jupyter_lab": True,
     },
