@@ -1,0 +1,124 @@
+from datetime import datetime, timedelta
+from py_eddy_tracker import start_logger
+from py_eddy_tracker.dataset.grid import UnRegularGridDataset
+from numpy import zeros, arange, float
+from netCDF4 import Dataset
+
+# for plotting
+from matplotlib import pyplot as plt
+
+class RomsDataset(UnRegularGridDataset):
+    
+    __slots__ = list()
+    
+    def init_speed_coef(self, uname, vname):
+        # xi_u and eta_v must be specified because this dimension are not use in lon/lat
+        u = self.grid(uname, indexs=self.indexs)
+        v = self.grid(vname, indexs=self.indexs)
+        u = self.rho_2d(u.T).T
+        v = self.rho_2d(v)
+        self._speed_norm = (v ** 2 + u ** 2) ** .5
+
+
+    @staticmethod
+    def rho_2d(x):
+        """Transformation to have u or v on same grid than h
+        """
+        M, Lp = x.shape
+        new_x = zeros((M + 1, Lp))
+        new_x[1:-1] = .5 * (x[:-1] + x[1:])
+        new_x[0] = new_x[1]
+        new_x[-1] = new_x[-2]
+        return new_x
+
+    @staticmethod
+    def psi2rho(var_psi):
+        """Transformation to have vrt on same grid than h
+        """
+        M, L = var_psi.shape
+        Mp=M+1; Lp=L+1
+        Mm=M-1; Lm=L-1
+        var_rho = zeros((Mp, Lp))
+        var_rho[1:M,1:L]=0.25*(var_psi[0:Mm,0:Lm]+var_psi[0:Mm,1:L]+var_psi[1:M,0:Lm]+var_psi[1:M,1:L])
+        var_rho[0,:]=var_rho[1,:]
+        var_rho[Mp-1,:]=var_rho[M-1,:]
+        var_rho[:,0]=var_rho[:,1]
+        var_rho[:,Lp-1]=var_rho[:,L-1]
+        return var_rho
+
+
+
+
+if __name__ == '__main__':
+    start_logger().setLevel('DEBUG')
+    
+    # Pick a depth
+    s_rho = 5 # 1000 m
+    depths = arange(-3500, 0, 500) # Make sure it is the same than used to generate the 'horizontal_section' files.
+    
+    depth = depths[s_rho]
+    
+    # Time loop
+    for time in range(7000, 7020):
+        
+
+        infiletime = time%10
+        filetime = time - time%10
+        
+        # Using times:
+        grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
+        
+        # or using dates
+        realyear_origin = datetime(2004,1,15)
+        date1 = realyear_origin + timedelta(days=float(time)/2.)
+        date2 = date1 + timedelta(days=float(4.5))
+
+        filedate =  '{0:04}'.format(date1.year)+'-'+\
+                    '{0:02}'.format(date1.month) + '-'+\
+                    '{0:02}'.format(date1.day)+ '-'+\
+                    '{0:04}'.format(date2.year)+'-'+\
+                    '{0:02}'.format(date2.month) + '-' +\
+                    '{0:02}'.format(date2.day)
+                        
+        print(filedate)
+        
+        lon_name, lat_name = 'lon', 'lat'
+        
+        
+        h = RomsDataset(grid_name, lon_name, lat_name, 
+                indexs=dict(time=infiletime,
+                eta_rho=slice(500, 800),
+                xi_rho=slice(500, 800),
+                eta_v=slice(500, 800-1),
+                xi_u=slice(500, 800-1),
+                s_rho=s_rho)
+        )
+        
+        # Must be set with time of grid
+        date = date1
+        
+        # Identification every 2 mm
+        a, c = h.eddy_identification('ow', 'u', 'v', date, z_min =  -10, z_max = -0.1, step = 0.05, pixel_limit=(10, 2000), shape_error=40, force_height_unit='m',force_speed_unit='m/s',vorticity_name='vrt')
+        
+        filename = 'gigatl6_1h_horizontal_section_' +  '{0:04}'.format(-depth) + '_'
+        
+        with Dataset(date.strftime('Anticyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
+            a.to_netcdf(h)
+        with Dataset(date.strftime('Cyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
+            c.to_netcdf(h)
+        
+        # PLOT
+        
+
+        fig = plt.figure(figsize=(15,7))
+        ax = fig.add_axes([.03,.03,.94,.94])
+        ax.set_title('Eddies detected -- Cyclonic(red) and Anticyclonic(blue)')
+        #ax.set_ylim(-75,75)
+        ax.set_xlim(250,360)
+        ax.set_aspect('equal')
+        a.display(ax, color='b', linewidth=.5)
+        c.display(ax, color='r', linewidth=.5)
+        ax.grid()
+        fig.savefig('eddies_' + date.strftime( filename + '%Y%m%d%H') +'.png')
+
+
