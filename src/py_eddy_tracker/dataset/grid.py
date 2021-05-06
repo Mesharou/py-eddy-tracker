@@ -385,6 +385,7 @@ class GridDataset(object):
         """
         x_name, y_name = self.coordinates
         with Dataset(self.filename) as h:
+        
             self.x_dim = h.variables[x_name].dimensions
             self.y_dim = h.variables[y_name].dimensions
 
@@ -665,11 +666,11 @@ class GridDataset(object):
                 precision /= factor
 
         # Get ssh grid
-        data = self.grid(grid_height).astype("f8")
+        data = 1e10*self.grid(grid_height).astype("f8")
         
         if grid_height in ['ow']:
             # Get vorticity as an aditional field (to identify cyc/acyc)
-            vrt = self.grid(vorticity_name, indexs=dict(xi_u=slice(None),eta_v=slice(None))).astype('f8')
+            vrt = self.grid(vorticity_name, indexs=self.indexs).astype('f8')
             if vorticity_name=='vrt': vrt = self.psi2rho(vrt)
             
         # In case of a reduced mask
@@ -706,7 +707,7 @@ class GridDataset(object):
                 z_min, z_max = z_min_p, z_max_p
         
         print('step1 z_min, z_max, step',z_min, z_max, step) #debug
-        levels = arange(z_min - z_min % step, z_max - z_max % step + 2 * step, step)
+        levels = arange(z_min - z_min % step, z_max - z_max % step + step, step)
 
         # Get x and y values
         x, y = self.x_c, self.y_c
@@ -803,7 +804,6 @@ class GridDataset(object):
 
                     # Here the considered contour passed shape_error test, masked_pixels test,
                     # values strictly above (AEs) or below (CEs) the contour, number_pixels test)
-
                     # Compute amplitude
                     reset_centroid, amp = self.get_amplitude(
                         contour,
@@ -815,6 +815,7 @@ class GridDataset(object):
                         mle=mle,
                         **kwargs,
                     )
+
                     # If we have a valid amplitude
                     if (not amp.within_amplitude_limits()) or (amp.amplitude == 0):
                         contour.reject = 4
@@ -985,6 +986,7 @@ class GridDataset(object):
             all_contours.iter(start=level_start + step, step=step)
         ):
             level_contour = coll.get_nearest_path_bbox_contain_pt(centlon_e, centlat_e)
+
             # Leave loop if no contours at level
             if level_contour is None:
                 break
@@ -1078,6 +1080,7 @@ class UnRegularGridDataset(GridDataset):
     def load(self):
         """Load variable (data)"""
         x_name, y_name = self.coordinates
+                
         with Dataset(self.filename) as h:
             self.x_dim = h.variables[x_name].dimensions
             self.y_dim = h.variables[y_name].dimensions
@@ -1091,7 +1094,8 @@ class UnRegularGridDataset(GridDataset):
             self.y_c = self.vars[y_name]
 
             self.init_pos_interpolator()
-
+            
+            
     @property
     def bounds(self):
         """Give bounds"""
