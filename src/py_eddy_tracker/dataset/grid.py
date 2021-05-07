@@ -665,8 +665,11 @@ class GridDataset(object):
             if precision is not None:
                 precision /= factor
 
-        # Get ssh grid
-        data = 1e10*self.grid(grid_height).astype("f8")
+        # Get ssh or ow
+        if grid_height in ['ow']:
+            data = 1e10 * self.grid(grid_height).astype("f8")
+        else:
+            data = self.grid(grid_height).astype("f8")
         
         if grid_height in ['ow']:
             # Get vorticity as an aditional field (to identify cyc/acyc)
@@ -706,9 +709,10 @@ class GridDataset(object):
                 )
                 z_min, z_max = z_min_p, z_max_p
         
-        print('step1 z_min, z_max, step',z_min, z_max, step) #debug
+        logger.warning('z_min, z_max, step are: %f, %f, %f.',z_min, z_max, step) #debug
         levels = arange(z_min - z_min % step, z_max - z_max % step + step, step)
-
+        print('levels used are:',levels)
+        
         # Get x and y values
         x, y = self.x_c, self.y_c
 
@@ -739,6 +743,7 @@ class GridDataset(object):
                 iterator = -1
             else:
                 iterator = 1 if anticyclonic_search else -1
+
 
             # Loop over each collection
             for coll_ind, coll in enumerate(self.contours.iter(step=iterator)):

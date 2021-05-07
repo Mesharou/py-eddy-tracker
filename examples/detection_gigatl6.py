@@ -13,8 +13,11 @@ class RomsDataset(UnRegularGridDataset):
     
     def init_speed_coef(self, uname, vname):
         # xi_u and eta_v must be specified because this dimension are not use in lon/lat
+        print(self.indexs)
         u = self.grid(uname, indexs=self.indexs)
         v = self.grid(vname, indexs=self.indexs)
+        print('u.shape',u.shape)
+
         u = self.rho_2d(u.T).T
         v = self.rho_2d(v)
         self._speed_norm = (v ** 2 + u ** 2) ** .5
@@ -46,59 +49,94 @@ class RomsDataset(UnRegularGridDataset):
         var_rho[:,Lp-1]=var_rho[:,L-1]
         return var_rho
 
+##########################
 
+varname = 'zeta'
 
+##########################
 
 if __name__ == '__main__':
     start_logger().setLevel('DEBUG')
     
     # Pick a depth
-    s_rho = 5 # 1000 m
-    depths = arange(-3500, 0, 500) # Make sure it is the same than used to generate the 'horizontal_section' files.
-    
-    depth = depths[s_rho]
+
+    if varname == 'zeta':
+        s_rho = -1
+        depth = 0
+    else:
+        s_rho =  5 # 1000 m
+        depths = arange(-3500, 0, 500) # Make sure it is the same than used to generate the 'horizontal_section' files.
+        depth = depths[s_rho]
     
     # Time loop
-    for time in range(7000, 7020):
+    for time in range(34800, 34801):
         
-
-        infiletime = time%10
-        filetime = time - time%10
+        dtfile = 120
+        infiletime = time%dtfile
+        filetime = time - time%dtfile
         
         # Using times:
-        grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
+        #grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
         
-        # or using dates
-        realyear_origin = datetime(2004,1,15)
-        date1 = realyear_origin + timedelta(days=float(time)/2.)
-        date2 = date1 + timedelta(days=float(4.5))
+        if varname =='ow':
+            grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
 
-        filedate =  '{0:04}'.format(date1.year)+'-'+\
-                    '{0:02}'.format(date1.month) + '-'+\
-                    '{0:02}'.format(date1.day)+ '-'+\
-                    '{0:04}'.format(date2.year)+'-'+\
-                    '{0:02}'.format(date2.month) + '-' +\
-                    '{0:02}'.format(date2.day)
+
+        elif varname == 'zeta':
+
+            # or using dates
+            realyear_origin = datetime(2004,1,15)
+            date1 = realyear_origin + timedelta(days=float(filetime)/24.)
+            date2 = date1 + timedelta(days=float(4.5))
+
+            filedate =  '{0:04}'.format(date1.year)+'-'+\
+                        '{0:02}'.format(date1.month) + '-'+\
+                        '{0:02}'.format(date1.day)+ '-'+\
+                        '{0:04}'.format(date2.year)+'-'+\
+                        '{0:02}'.format(date2.month) + '-' +\
+                        '{0:02}'.format(date2.day)
                         
-        print(filedate)
+            print(filedate)
         
-        lon_name, lat_name = 'lon', 'lat'
-        
-        
+            grid_name = './GIGATL6/GIGATL6_1h_inst_surf_' + filedate + '.nc'
+
+
+        # Identification
+        if varname=='zeta':
+            lon_name, lat_name = 'nav_lon_rho', 'nav_lat_rho'
+        elif varname=='ow':        
+            lon_name, lat_name = 'lon', 'lat'
+
+        # domain grid points: x1, x2, y1, y2
+        x1, x2 = 0, 1500
+        y1, y2 = 0, 2000
+
         h = RomsDataset(grid_name, lon_name, lat_name, 
                 indexs=dict(time=infiletime,
-                eta_rho=slice(500, 800),
-                xi_rho=slice(500, 800),
-                eta_v=slice(500, 800-1),
-                xi_u=slice(500, 800-1),
+                eta_rho=slice(y1, y2),
+                xi_rho=slice(x1, x2),
+                eta_v=slice(y1, y2-1),
+                xi_u=slice(x1, x2-1),
+                y_rho=slice(y1, y2),
+                x_rho=slice(x1, x2),
+                y_v=slice(y1, y2-1),
+                y_u=slice(y1, y2),
+                x_u=slice(x1, x2-1),
+                x_v=slice(x1, x2),
                 s_rho=s_rho)
         )
         
         # Must be set with time of grid
         date = date1
         
-        # Identification every 2 mm
-        a, c = h.eddy_identification('ow', 'u', 'v', date, z_min =  -10, z_max = -0.1, step = 0.05, pixel_limit=(10, 2000), shape_error=40, force_height_unit='m',force_speed_unit='m/s',vorticity_name='vrt')
+        # Identification
+        if varname=='zeta':
+            z_min = -2 ; z_max = 1; step = 0.02
+        elif varname=='ow':
+            z_min = -10; z_max = -0.1; step = 0.05
+
+
+        a, c = h.eddy_identification(varname, 'u', 'v', date, z_min =  z_min, z_max = z_max, step = step, pixel_limit=(10, 2000), shape_error=40, force_height_unit='m',force_speed_unit='m/s',vorticity_name='vrt')
         
         filename = 'gigatl6_1h_horizontal_section_' +  '{0:04}'.format(-depth) + '_'
         
