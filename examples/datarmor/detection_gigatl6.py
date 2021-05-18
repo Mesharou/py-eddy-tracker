@@ -7,6 +7,9 @@ from netCDF4 import Dataset
 # for plotting
 from matplotlib import pyplot as plt
 
+import sys,os,shutil
+
+
 class RomsDataset(UnRegularGridDataset):
     
     __slots__ = list()
@@ -51,42 +54,82 @@ class RomsDataset(UnRegularGridDataset):
 
 ##########################
 
-varname = 'zeta'
+varname = sys.argv[1]
+
+print("varname id %s", varname)
+
+#varname = 'zeta'
 
 ##########################
 
 if __name__ == '__main__':
     start_logger().setLevel('DEBUG')
+
+
+
+    ####
+    # create case-specific folder
+    folder = varname + '/' + sys.argv[2] + '/'
+
+    try:
+        os.mkdir(folder)
+    except OSError:
+        print ("Directory %s already exists" % folder)
+
+
+    # copy script in folder
+    shutil.copy('detection_gigatl6.py',folder)
+
     
-    # Pick a depth
+    # Pick a depth/isopycnal
 
     if varname == 'zeta':
         s_rho = -1
         depth = 0
-    else:
-        s_rho =  5 # 1000 m
-        depths = arange(-3500, 0, 500) # Make sure it is the same than used to generate the 'horizontal_section' files.
-        depth = depths[s_rho]
+    elif  varname == 'ow':
+        #isopycnal
+        grid_name = './iso/gigatl6_1h_isopycnal_section.01440.nc'
+        nc = Dataset(grid_name,'r')
+        isopycnals = nc.variables['isopycnal'][:]
+        nc.close()
+
+        s_rho =  1 #
+        depth = isopycnals[s_rho]
+        
+
     
     # Time loop
-    for time in range(34800, 34801):
+    #for time in range(34800, 34801):
+    for time in range(1440, 6000):
+
         
-        dtfile = 120
-        infiletime = time%dtfile
-        filetime = time - time%dtfile
+        # hourly data
+        #dtfile = 1
+        # 12-hourly
+        dtfile = 12
+
+        tfile = 5*24//dtfile
+        
+        ###########
+        realyear_origin = datetime(2004,1,15)
+        date = realyear_origin + timedelta(days=float(time)*dtfile/24.)
+            
+        infiletime = time%tfile
+        filetime = time - time%tfile
+        
         
         # Using times:
         #grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
         
         if varname =='ow':
-            grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
+            #grid_name = './GIGATL6/gigatl6_1h_horizontal_section.' + '{0:05}'.format(filetime) + '.nc'
+            grid_name = './iso/gigatl6_1h_isopycnal_section.' + '{0:05}'.format(filetime) + '.nc'
 
 
         elif varname == 'zeta':
 
             # or using dates
-            realyear_origin = datetime(2004,1,15)
-            date1 = realyear_origin + timedelta(days=float(filetime)/24.)
+            date1 = realyear_origin + timedelta(days=float(filetime)*dtfile/24.)
             date2 = date1 + timedelta(days=float(4.5))
 
             filedate =  '{0:04}'.format(date1.year)+'-'+\
@@ -98,7 +141,7 @@ if __name__ == '__main__':
                         
             print(filedate)
         
-            grid_name = './GIGATL6/GIGATL6_1h_inst_surf_' + filedate + '.nc'
+            grid_name = './HIS/GIGATL6_1h_inst_surf_' + filedate + '.nc'
 
 
         # Identification
@@ -108,11 +151,14 @@ if __name__ == '__main__':
             lon_name, lat_name = 'lon', 'lat'
 
         # domain grid points: x1, x2, y1, y2
-        x1, x2 = 0, 1500
+        x1, x2 = 400, 1200
+        y1, y2 = 400, 1200
+
+        x1, x2 = 0, 1600
         y1, y2 = 0, 2000
 
         h = RomsDataset(grid_name, lon_name, lat_name, 
-                indexs=dict(time=infiletime,
+                indexs=dict(time=infiletime,time_counter=infiletime,
                 eta_rho=slice(y1, y2),
                 xi_rho=slice(x1, x2),
                 eta_v=slice(y1, y2-1),
@@ -126,23 +172,26 @@ if __name__ == '__main__':
                 s_rho=s_rho)
         )
         
-        # Must be set with time of grid
-        date = date1
+
         
         # Identification
         if varname=='zeta':
-            z_min = -2 ; z_max = 1; step = 0.02
+            z_min = -2 ; z_max = 1.5; step = 0.02
         elif varname=='ow':
-            z_min = -10; z_max = -0.1; step = 0.05
+            # ow is multiplied by 1e10
+            z_min = -1; z_max = -0.01; step = 0.01
 
 
         a, c = h.eddy_identification(varname, 'u', 'v', date, z_min =  z_min, z_max = z_max, step = step, pixel_limit=(10, 2000), shape_error=40, force_height_unit='m',force_speed_unit='m/s',vorticity_name='vrt')
         
-        filename = 'gigatl6_1h_horizontal_section_' +  '{0:04}'.format(-depth) + '_'
+ 
+        ####
+
+        filename = 'gigatl6_1h_' + varname + '_'+  '{0:04}'.format(depth) + '_'
         
-        with Dataset(date.strftime('Anticyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
+        with Dataset(date.strftime(folder + 'Anticyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
             a.to_netcdf(h)
-        with Dataset(date.strftime('Cyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
+        with Dataset(date.strftime(folder + 'Cyclonic_' + filename + '%Y%m%d%H.nc'), 'w') as h:
             c.to_netcdf(h)
         
         # PLOT
@@ -157,6 +206,6 @@ if __name__ == '__main__':
         a.display(ax, color='b', linewidth=.5)
         c.display(ax, color='r', linewidth=.5)
         ax.grid()
-        fig.savefig('eddies_' + date.strftime( filename + '%Y%m%d%H') +'.png')
+        fig.savefig(folder + 'eddies_' + date.strftime( filename + '%Y%m%d%H') +'.png')
 
 
