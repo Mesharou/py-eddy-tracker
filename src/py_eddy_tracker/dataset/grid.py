@@ -255,6 +255,7 @@ class GridDataset(object):
         "y_dim",
         "coordinates",
         "filename",
+        "gridname",
         "dimensions",
         "indexs",
         "variables_description",
@@ -270,12 +271,13 @@ class GridDataset(object):
     N = 1
 
     def __init__(
-        self, filename, x_name, y_name, centered=None, indexs=None, unset=False
+        self, filename, x_name, y_name, gridname=None, centered=None, indexs=None, unset=False
     ):
         """
         :param str filename: Filename to load
         :param str x_name: Name of longitude coordinates
         :param str y_name: Name of latitude coordinates
+        :param str gridname: Name of file containing lon,lat (filename is used if not defined)
         :param bool,None centered: Allow to know how coordinates could be used with pixel
         :param dict indexs: A dictionary that sets indexes to use for non-coordinate dimensions
         :param bool unset: Set to True to create an empty grid object without file
@@ -292,6 +294,10 @@ class GridDataset(object):
         self.centered = centered
         self.contours = None
         self.filename = filename
+        if gridname is not None:
+            self.gridname = gridname
+        else:
+            self.gridname = filename
         self.coordinates = x_name, y_name
         self.vars = dict()
         self.indexs = dict() if indexs is None else indexs
@@ -384,7 +390,7 @@ class GridDataset(object):
         Get coordinates and setup coordinates function
         """
         x_name, y_name = self.coordinates
-        with Dataset(self.filename) as h:
+        with Dataset(self.gridname) as h:
         
             self.x_dim = h.variables[x_name].dimensions
             self.y_dim = h.variables[y_name].dimensions
