@@ -17,7 +17,7 @@ from numpy import bincount, bytes_, empty, in1d, unique
 from numpy import dtype as npdtype
 from yaml import safe_load
 
-from .. import EddyParser
+from .. import EddyParser, identify_time
 from ..observations.observation import EddiesObservations, reverse_index
 from ..observations.tracking import TrackEddiesObservations
 from ..tracking import Correspondances
@@ -165,7 +165,12 @@ def eddies_tracking():
     parser.add_argument(
         "--zarr", action="store_true", help="Output will be wrote in zarr"
     )
-    parser.add_argument("--unraw", action="store_true", help="Load unraw data")
+    parser.add_argument(
+        "--unraw",
+        action="store_true",
+        help="Load unraw data, use only for netcdf."
+        "If unraw is active, netcdf is loaded without apply scalefactor and add_offset.",
+    )
     parser.add_argument(
         "--blank_period",
         type=int,
@@ -354,10 +359,12 @@ def track(
 
     short_c = c._copy()
     short_c.shorter_than(size_max=nb_obs_min)
-    c.longer_than(size_min=nb_obs_min)
-
-    long_track = c.merge(raw_data=raw)
     short_track = short_c.merge(raw_data=raw)
+
+    if c.longer_than(size_min=nb_obs_min) is False:
+        long_track = short_track.empty_dataset()
+    else:
+        long_track = c.merge(raw_data=raw)
 
     # We flag obs
     if c.virtual:

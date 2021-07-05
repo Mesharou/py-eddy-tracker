@@ -821,6 +821,7 @@ class GridDataset(object):
 
                     # Here the considered contour passed shape_error test, masked_pixels test,
                     # values strictly above (AEs) or below (CEs) the contour, number_pixels test)
+
                     # Compute amplitude
                     reset_centroid, amp = self.get_amplitude(
                         contour,
@@ -832,7 +833,6 @@ class GridDataset(object):
                         mle=mle,
                         **kwargs,
                     )
-
                     # If we have a valid amplitude
                     if (not amp.within_amplitude_limits()) or (amp.amplitude == 0):
                         contour.reject = 4
@@ -1003,7 +1003,6 @@ class GridDataset(object):
             all_contours.iter(start=level_start + step, step=step)
         ):
             level_contour = coll.get_nearest_path_bbox_contain_pt(centlon_e, centlat_e)
-
             # Leave loop if no contours at level
             if level_contour is None:
                 break
@@ -1097,7 +1096,6 @@ class UnRegularGridDataset(GridDataset):
     def load(self):
         """Load variable (data)"""
         x_name, y_name = self.coordinates
-                
         with Dataset(self.filename) as h:
             self.x_dim = h.variables[x_name].dimensions
             self.y_dim = h.variables[y_name].dimensions
@@ -1111,8 +1109,7 @@ class UnRegularGridDataset(GridDataset):
             self.y_c = self.vars[y_name]
 
             self.init_pos_interpolator()
-            
-            
+
     @property
     def bounds(self):
         """Give bounds"""
@@ -2332,12 +2329,25 @@ class GridCollection:
     @classmethod
     def from_netcdf_list(cls, filenames, t, x_name, y_name, indexs=None, heigth=None):
         new = cls()
-        for i, t in enumerate(t):
-            d = RegularGridDataset(filenames[i], x_name, y_name, indexs=indexs)
+        for i, _t in enumerate(t):
+            filename = filenames[i]
+            logger.debug(f"load file {i:02d}/{len(t)} t={_t} : {filename}")
+            d = RegularGridDataset(filename, x_name, y_name, indexs=indexs)
             if heigth is not None:
                 d.add_uv(heigth)
-            new.datasets.append((t, d))
+            new.datasets.append((_t, d))
         return new
+
+    def shift_files(self, t, filename, heigth=None, **rgd_kwargs):
+        """Add next file to the list and remove the oldest"""
+
+        self.datasets = self.datasets[1:]
+
+        d = RegularGridDataset(filename, **rgd_kwargs)
+        if heigth is not None:
+            d.add_uv(heigth)
+        self.datasets.append((t, d))
+        logger.debug(f"shift and adding i={len(self.datasets)} t={t} : {filename}")
 
     def interp(self, grid_name, t, lons, lats, method="bilinear"):
         """
@@ -2498,6 +2508,7 @@ class GridCollection:
         else:
             mask_particule += isnan(x) + isnan(y)
         while True:
+            logger.debug(f"advect : t={t}")
             if (backward and t <= t1) or (not backward and t >= t1):
                 t0, u0, v0, m0 = t1, u1, v1, m1
                 t1, d1 = generator.__next__()
@@ -2524,25 +2535,21 @@ class GridCollection:
             yield t, x, y
 
     def get_next_time_step(self, t_init):
-        first = True
         for i, (t, dataset) in enumerate(self.datasets):
             if t < t_init:
                 continue
-            if first:
-                first = False
-                yield self.datasets[i - 1]
+
+            logger.debug(f"i={i}, t={t}, dataset={dataset}")
             yield t, dataset
 
     def get_previous_time_step(self, t_init):
-        first = True
         i = len(self.datasets)
         for t, dataset in reversed(self.datasets):
             i -= 1
             if t > t_init:
                 continue
-            if first:
-                first = False
-                yield self.datasets[i + 1]
+
+            logger.debug(f"i={i}, t={t}, dataset={dataset}")
             yield t, dataset
 
 
@@ -2616,6 +2623,11 @@ def get_uv_quad(i0, j0, u, v, m, nb_x=0):
     i1, j1 = i0 + 1, j0 + 1
     if nb_x != 0:
         i1 %= nb_x
+    i_max, j_max = m.shape
+
+    if i1 >= i_max or j1 >= j_max:
+        return True, nan, nan, nan, nan, nan, nan, nan, nan
+
     if m[i0, j0] or m[i0, j1] or m[i1, j0] or m[i1, j1]:
         return True, nan, nan, nan, nan, nan, nan, nan, nan
     # Extract value for u and v
