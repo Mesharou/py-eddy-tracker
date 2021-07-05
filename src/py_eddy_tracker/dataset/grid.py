@@ -613,6 +613,8 @@ class GridDataset(object):
         force_speed_unit=None,
         vorticity_name='vrt',
         mle=1,
+        filtering=False,
+        filtering_scale=30,
         **kwargs,
     ):
         """
@@ -676,7 +678,7 @@ class GridDataset(object):
             data = 1e10 * self.grid(grid_height).astype("f8")
         else:
             data = self.grid(grid_height).astype("f8")
-        
+
         if grid_height in ['ow']:
             # Get vorticity as an aditional field (to identify cyc/acyc)
             vrt = self.grid(vorticity_name, indexs=self.indexs).astype('f8')
@@ -687,9 +689,13 @@ class GridDataset(object):
             data.mask = zeros(data.shape, dtype="bool")
             data.mask[isnan(data)] = 1
             
+        if filtering and grid_height in ['zeta']:
+            data = data - gaussian_filter(data, filtering_scale)
+            
         # we remove noisy information
         if precision is not None:
             data = (data / precision).round() * precision
+            
         # Compute levels for ssh/okubo
         if z_min is None or z_max is None:
             if grid_height in ['ow']:
