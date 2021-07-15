@@ -1073,6 +1073,8 @@ class GridDataset(object):
             contour_height=contour_height,
             # All grid
             data=data,
+            # nb of allowed extrema
+            mle=mle,
             **kwargs,
         )
 
