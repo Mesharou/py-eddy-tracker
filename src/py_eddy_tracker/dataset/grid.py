@@ -613,7 +613,7 @@ class GridDataset(object):
         force_speed_unit=None,
         vorticity_name='vrt',
         mle=1,
-        filtering=False,
+        filtering=None,
         filtering_scale=30,
         **kwargs,
     ):
@@ -689,8 +689,12 @@ class GridDataset(object):
             data.mask = zeros(data.shape, dtype="bool")
             data.mask[isnan(data)] = 1
             
-        if filtering and grid_height in ['zeta']:
-            data = data - gaussian_filter(data, filtering_scale)
+        if filtering is not None and grid_height in ['zeta']:
+            if filtering is 'highpass':
+                data = data - gaussian_filter(data, filtering_scale)
+            if filtering is 'lowpass':
+                data = data - gaussian_filter(data, filtering_scale)
+
             
         # we remove noisy information
         if precision is not None:
