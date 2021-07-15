@@ -693,7 +693,7 @@ class GridDataset(object):
             if filtering is 'highpass':
                 data = data - gaussian_filter(data, filtering_scale)
             if filtering is 'lowpass':
-                data = data - gaussian_filter(data, filtering_scale)
+                data = gaussian_filter(data, filtering_scale)
 
             
         # we remove noisy information
