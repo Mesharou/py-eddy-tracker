@@ -692,8 +692,8 @@ class GridDataset(object):
         if filtering is not None and grid_height in ['zeta']:
             if filtering is 'highpass':
                 data = data - gaussian_filter(data, filtering_scale)
-            if filtering is 'lowpass':
-                data = gaussian_filter(data, filtering_scale)
+            elif filtering is 'lowpass':
+                data[:] = gaussian_filter(data, filtering_scale)
 
             
         # we remove noisy information
