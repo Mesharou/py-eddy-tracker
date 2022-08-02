@@ -40,6 +40,10 @@ def build_network():
         "--hybrid-area",
         action="store_true",
         help="If True, use minimal-area method if overlap is under min overlap, else intersection/union",
+        "--unraw",
+        action="store_true",
+        help="Load unraw data, use only for netcdf."
+        "If unraw is active, netcdf is loaded without apply scalefactor and add_offset.",
     )
 
     parser.contour_intern_arg()
@@ -58,7 +62,7 @@ def build_network():
         minimal_area=args.minimal_area,
         hybrid_area=args.hybrid_area,
     )
-    n.build_dataset(group).write_file(filename=args.out)
+    n.build_dataset(group,raw_data=not args.unraw).write_file(filename=args.out)
 
 
 def divide_network():
