@@ -2,19 +2,18 @@
 """
 Base class to manage eddy observation
 """
-import logging
 from datetime import datetime
 from io import BufferedReader, BytesIO
+import logging
 from tarfile import ExFileObject
 from tokenize import TokenError
 
-import zarr
+from Polygon import Polygon
 from matplotlib.cm import get_cmap
-from matplotlib.collections import PolyCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.colors import Normalize
 from netCDF4 import Dataset
-from numba import njit
-from numba import types as numba_types
+from numba import njit, types as numba_types
 from numpy import (
     absolute,
     arange,
@@ -43,9 +42,10 @@ from numpy import (
     where,
     zeros,
 )
+import packaging.version
 from pint import UnitRegistry
 from pint.errors import UndefinedUnitError
-from Polygon import Polygon
+import zarr
 
 from .. import VAR_DESCR, VAR_DESCR_inv, __version__
 from ..generic import (
@@ -57,12 +57,14 @@ from ..generic import (
     hist_numba,
     local_to_coordinates,
     reverse_index,
+    window_index,
     wrap_longitude,
 )
 from ..poly import (
     bbox_intersection,
     close_center,
     convexs,
+    create_meshed_particles,
     create_vertice,
     get_pixel_in_regular,
     insidepoly,
@@ -72,6 +74,29 @@ from ..poly import (
 )
 
 logger = logging.getLogger("pet")
+
+# keep only major and minor version number
+_software_version_reduced = packaging.version.Version(
+    "{v.major}.{v.minor}".format(v=packaging.version.parse(__version__))
+)
+
+
+def _check_versions(version):
+    """Check if version of py_eddy_tracker used to create the file is compatible with software version
+
+    if not, warn user with both versions
+
+    :param version: string version of software used to create the file. If None, version was not provided
+    :type version: str, None
+    """
+
+    file_version = packaging.version.parse(version) if version is not None else None
+    if file_version is None or file_version < _software_version_reduced:
+        logger.warning(
+            "File was created with py-eddy-tracker version '%s' but software version is '%s'",
+            file_version,
+            _software_version_reduced,
+        )
 
 
 @njit(cache=True, fastmath=True)
@@ -105,7 +130,7 @@ def shifted_ellipsoid_degrees_mask2(lon0, lat0, lon1, lat1, minor=1.5, major=1.5
             if dx > major[j]:
                 m[j, i] = False
                 continue
-            d_normalize = dx ** 2 / major[j] ** 2 + dy ** 2 / minor ** 2
+            d_normalize = dx**2 / major[j] ** 2 + dy**2 / minor**2
             m[j, i] = d_normalize < 1.0
     return m
 
@@ -240,7 +265,7 @@ class EddiesObservations(object):
             bins_lat=(-90, -60, -15, 15, 60, 90),
             bins_amplitude=array((0, 1, 2, 3, 4, 5, 10, 500)),
             bins_radius=array((0, 15, 30, 45, 60, 75, 100, 200, 2000)),
-            nb_obs=self.observations.shape[0],
+            nb_obs=len(self),
         )
         t0, t1 = self.period
         infos["t0"], infos["t1"] = t0, t1
@@ -282,12 +307,16 @@ class EddiesObservations(object):
         """Return values evenly spaced with few numbers"""
         return "".join([f"{v_:10.2f}" for v_ in value])
 
+    @property
+    def fields(self):
+        return list(self.obs.dtype.names)
+
     def field_table(self):
         """
         Produce description table of the fields available in this object
         """
         rows = [("Name (Unit)", "Long name", "Scale factor", "Offset")]
-        names = list(self.obs.dtype.names)
+        names = self.fields
         names.sort()
         for field in names:
             infos = VAR_DESCR[field]
@@ -313,7 +342,7 @@ class EddiesObservations(object):
         bins_lat = (-90, -60, -15, 15, 60, 90)
         bins_amplitude = array((0, 1, 2, 3, 4, 5, 10, 500))
         bins_radius = array((0, 15, 30, 45, 60, 75, 100, 200, 2000))
-        nb_obs = self.observations.shape[0]
+        nb_obs = len(self)
 
         return f"""    | {nb_obs} observations from {t0} to {t1} ({period} days, ~{nb_obs / period:.0f} obs/day)
     |   Speed area      : {self.speed_area.sum() / period / 1e12:.2f} Mkm²/day
@@ -388,9 +417,9 @@ class EddiesObservations(object):
         """
         Copy with fields listed remove
         """
-        nb_obs = self.obs.shape[0]
+        nb_obs = len(self)
         fields = set(fields)
-        only_variables = set(self.obs.dtype.names) - fields
+        only_variables = set(self.fields) - fields
         track_extra_variables = set(self.track_extra_variables) - fields
         array_variables = set(self.array_variables) - fields
         new = self.__class__(
@@ -402,7 +431,7 @@ class EddiesObservations(object):
             raw_data=self.raw_data,
         )
         new.sign_type = self.sign_type
-        for name in new.obs.dtype.names:
+        for name in new.fields:
             logger.debug("Copy of field %s ...", name)
             new.obs[name] = self.obs[name]
         return new
@@ -411,7 +440,7 @@ class EddiesObservations(object):
         """
         Add a new field.
         """
-        nb_obs = self.obs.shape[0]
+        nb_obs = len(self)
         new = self.__class__(
             size=nb_obs,
             track_extra_variables=list(
@@ -419,13 +448,11 @@ class EddiesObservations(object):
             ),
             track_array_variables=self.track_array_variables,
             array_variables=list(concatenate((self.array_variables, array_fields))),
-            only_variables=list(
-                concatenate((self.obs.dtype.names, fields, array_fields))
-            ),
+            only_variables=list(concatenate((self.fields, fields, array_fields))),
             raw_data=self.raw_data,
         )
         new.sign_type = self.sign_type
-        for name in self.obs.dtype.names:
+        for name in self.fields:
             logger.debug("Copy of field %s ...", name)
             new.obs[name] = self.obs[name]
         return new
@@ -443,8 +470,8 @@ class EddiesObservations(object):
         """
         angle = radians(linspace(0, 360, self.track_array_variables))
         x_norm, y_norm = cos(angle), sin(angle)
-        radius_s = "contour_lon_s" in self.obs.dtype.names
-        radius_e = "contour_lon_e" in self.obs.dtype.names
+        radius_s = "contour_lon_s" in self.fields
+        radius_e = "contour_lon_e" in self.fields
         for i, obs in enumerate(self):
             if only_virtual and not obs["virtual"]:
                 continue
@@ -519,9 +546,9 @@ class EddiesObservations(object):
         nb_obs_self = len(self)
         nb_obs = nb_obs_self + len(other)
         eddies = self.new_like(self, nb_obs)
-        other_keys = other.obs.dtype.fields.keys()
-        self_keys = self.obs.dtype.fields.keys()
-        for key in eddies.obs.dtype.fields.keys():
+        other_keys = other.fields
+        self_keys = self.fields
+        for key in eddies.fields:
             eddies.obs[key][:nb_obs_self] = self.obs[key][:]
             if key in other_keys:
                 eddies.obs[key][nb_obs_self:] = other.obs[key][:]
@@ -546,60 +573,76 @@ class EddiesObservations(object):
         for obs in self.obs:
             yield obs
 
-    def iter_on(self, xname, bins=None):
+    def iter_on(self, xname, window=None, bins=None):
         """
         Yield observation group for each bin.
 
         :param str,array xname:
-        :param array bins: bounds of each bin ,
-        :return: index or mask, bound low, bound up
+        :param float,None window: if defined we use a moving window with value like half window
+        :param array bins: bounds of each bin
+        :yield array,float,float: index in self, lower bound, upper bound
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.iter_on
         """
-        x = self[xname] if isinstance(xname, str) else xname
-        d = x[1:] - x[:-1]
-        if bins is None:
-            bins = arange(x.min(), x.max() + 2)
-        elif not isinstance(bins, ndarray):
-            bins = array(bins)
-        nb_bins = len(bins) - 1
-
-        # Not monotonous
-        if (d < 0).any():
-            # If bins cover a small part of value
-            test, translate, x = iter_mode_reduce(x, bins)
-            # convert value in bins number
-            i = numba_digitize(x, bins) - 1
-            # Order by bins
-            i_sort = i.argsort()
-            # If in reduced mode we will translate i_sort in full array index
-            i_sort_ = translate[i_sort] if test else i_sort
-            # Bound for each bins in sorting view
-            i0, i1, _ = build_index(i[i_sort])
-            m = ~(i0 == i1)
-            i0, i1 = i0[m], i1[m]
-            for i0_, i1_ in zip(i0, i1):
-                i_bins = i[i_sort[i0_]]
-                if i_bins == -1 or i_bins == nb_bins:
-                    continue
-                yield i_sort_[i0_:i1_], bins[i_bins], bins[i_bins + 1]
+        x = self.parse_varname(xname)
+        if window is not None:
+            x0 = arange(x.min(), x.max()) if bins is None else array(bins)
+            i_ordered, first_index, last_index = window_index(x, x0, window)
+            for x_, i0, i1 in zip(x0, first_index, last_index):
+                yield i_ordered[i0:i1], x_ - window, x_ + window
         else:
-            i = numba_digitize(x, bins) - 1
-            i0, i1, _ = build_index(i)
-            m = ~(i0 == i1)
-            i0, i1 = i0[m], i1[m]
-            for i0_, i1_ in zip(i0, i1):
-                i_bins = i[i0_]
-                yield slice(i0_, i1_), bins[i_bins], bins[i_bins + 1]
+            d = x[1:] - x[:-1]
+            if bins is None:
+                bins = arange(x.min(), x.max() + 2)
+            elif not isinstance(bins, ndarray):
+                bins = array(bins)
+            nb_bins = len(bins) - 1
 
-    def align_on(self, other, var_name="time", **kwargs):
+            # Not monotonous
+            if (d < 0).any():
+                # If bins cover a small part of value
+                test, translate, x = iter_mode_reduce(x, bins)
+                # convert value in bins number
+                i = numba_digitize(x, bins) - 1
+                # Order by bins
+                i_sort = i.argsort()
+                # If in reduced mode we will translate i_sort in full array index
+                i_sort_ = translate[i_sort] if test else i_sort
+                # Bound for each bins in sorting view
+                i0, i1, _ = build_index(i[i_sort])
+                m = ~(i0 == i1)
+                i0, i1 = i0[m], i1[m]
+                for i0_, i1_ in zip(i0, i1):
+                    i_bins = i[i_sort[i0_]]
+                    if i_bins == -1 or i_bins == nb_bins:
+                        continue
+                    yield i_sort_[i0_:i1_], bins[i_bins], bins[i_bins + 1]
+            else:
+                i = numba_digitize(x, bins) - 1
+                i0, i1, _ = build_index(i)
+                m = ~(i0 == i1)
+                i0, i1 = i0[m], i1[m]
+                for i0_, i1_ in zip(i0, i1):
+                    i_bins = i[i0_]
+                    yield slice(i0_, i1_), bins[i_bins], bins[i_bins + 1]
+
+    def align_on(self, other, var_name="time", all_ref=False, **kwargs):
         """
-        Align the time indices of two datasets.
+        Align the variable indices of two datasets.
+
+        :param other: other compare with self
+        :param str,tuple var_name: variable name to align or two array, defaults to "time"
+        :param bool all_ref: yield all value of ref, if false only common value, defaults to False
+        :yield array,array,float,float: index in self, index in other, lower bound, upper bound
 
         .. minigallery:: py_eddy_tracker.EddiesObservations.align_on
         """
-        iter_self = self.iter_on(var_name, **kwargs)
-        iter_other = other.iter_on(var_name, **kwargs)
+        if isinstance(var_name, str):
+            iter_self = self.iter_on(var_name, **kwargs)
+            iter_other = other.iter_on(var_name, **kwargs)
+        else:
+            iter_self = self.iter_on(var_name[0], **kwargs)
+            iter_other = other.iter_on(var_name[1], **kwargs)
         indexs_other, b0_other, b1_other = iter_other.__next__()
         for indexs_self, b0_self, b1_self in iter_self:
             if b0_self > b0_other:
@@ -609,6 +652,10 @@ class EddiesObservations(object):
                 except StopIteration:
                     break
             if b0_self < b0_other:
+                if all_ref:
+                    yield indexs_self, empty(
+                        0, dtype=indexs_self.dtype
+                    ), b0_self, b1_self
                 continue
             yield indexs_self, indexs_other, b0_self, b1_self
 
@@ -616,8 +663,8 @@ class EddiesObservations(object):
         """Insert other obs in self at the given index."""
         if not self.coherence(other):
             raise Exception("Observations with no coherence")
-        insert_size = len(other.obs)
-        self_size = len(self.obs)
+        insert_size = len(other)
+        self_size = len(self)
         new_size = self_size + insert_size
         if self_size == 0:
             self.observations = other.obs
@@ -647,7 +694,7 @@ class EddiesObservations(object):
 
     def __copy__(self):
         eddies = self.new_like(self, len(self))
-        for k in self.obs.dtype.names:
+        for k in self.fields:
             eddies[k][:] = self[k][:]
         eddies.sign_type = self.sign_type
         return eddies
@@ -686,10 +733,13 @@ class EddiesObservations(object):
             h = filename
         else:
             h = zarr.open(filename)
+
         dims = list()
         for varname in h:
-            dims.extend(list(getattr(h, varname).shape))
-        return set(dims)
+            shape = getattr(h, varname).shape
+            if len(shape) > len(dims):
+                dims = shape
+        return dims
 
     @classmethod
     def load_file(cls, filename, **kwargs):
@@ -723,6 +773,7 @@ class EddiesObservations(object):
             zarr_file = filename_.endswith(end)
         else:
             zarr_file = False
+        logger.info(f"loading file '{filename}'")
         if zarr_file:
             return cls.load_from_zarr(filename, **kwargs)
         else:
@@ -752,20 +803,19 @@ class EddiesObservations(object):
         :return type: class
         """
         # FIXME
-        array_dim = -1
         if isinstance(filename, zarr.storage.MutableMapping):
             h_zarr = filename
         else:
             if not isinstance(filename, str):
                 filename = filename.astype(str)
             h_zarr = zarr.open(filename)
+
+        _check_versions(h_zarr.attrs.get("framework_version", None))
         var_list = cls.build_var_list(list(h_zarr.keys()), remove_vars, include_vars)
 
         nb_obs = getattr(h_zarr, var_list[0]).shape[0]
-        dims = list(cls.zarr_dimension(filename))
-        if len(dims) == 2 and nb_obs in dims:
-            # FIXME must be investigated, in zarr no dimensions name (or could be add in attr)
-            array_dim = dims[1] if nb_obs == dims[0] else dims[0]
+        track_array_variables = h_zarr.attrs["track_array_variables"]
+
         if indexs is not None and "obs" in indexs:
             sl = indexs["obs"]
             sl = slice(sl.start, min(sl.stop, nb_obs))
@@ -779,28 +829,33 @@ class EddiesObservations(object):
         logger.debug("%d observations will be load", nb_obs)
         kwargs = dict()
 
-        if array_dim in dims:
-            kwargs["track_array_variables"] = array_dim
-            kwargs["array_variables"] = list()
-            for variable in var_list:
-                if array_dim in h_zarr[variable].shape:
-                    var_inv = VAR_DESCR_inv[variable]
-                    kwargs["array_variables"].append(var_inv)
-        array_variables = kwargs.get("array_variables", list())
-        kwargs["track_extra_variables"] = []
+        kwargs["track_array_variables"] = h_zarr.attrs.get(
+            "track_array_variables", track_array_variables
+        )
+
+        array_variables = list()
+        for variable in var_list:
+            if len(h_zarr[variable].shape) > 1:
+                var_inv = VAR_DESCR_inv[variable]
+                array_variables.append(var_inv)
+        kwargs["array_variables"] = array_variables
+        track_extra_variables = []
+
         for variable in var_list:
             var_inv = VAR_DESCR_inv[variable]
             if var_inv not in cls.ELEMENTS and var_inv not in array_variables:
-                kwargs["track_extra_variables"].append(var_inv)
+                track_extra_variables.append(var_inv)
+        kwargs["track_extra_variables"] = track_extra_variables
         kwargs["raw_data"] = raw_data
         kwargs["only_variables"] = (
             None if include_vars is None else [VAR_DESCR_inv[i] for i in include_vars]
         )
         kwargs.update(class_kwargs)
         eddies = cls(size=nb_obs, **kwargs)
-        for variable in var_list:
+
+        for i_var, variable in enumerate(var_list):
             var_inv = VAR_DESCR_inv[variable]
-            logger.debug("%s will be loaded", variable)
+            logger.debug("%s will be loaded (%d/%d)", variable, i_var, len(var_list))
             # find unit factor
             input_unit = h_zarr[variable].attrs.get("unit", None)
             if input_unit is None:
@@ -856,6 +911,7 @@ class EddiesObservations(object):
             i_start = 0
         if i_stop is None:
             i_stop = handler_zarr.shape[0]
+
         for i in range(i_start, i_stop, buffer_size):
             sl_in = slice(i, min(i + buffer_size, i_stop))
             data = handler_zarr[sl_in]
@@ -866,6 +922,7 @@ class EddiesObservations(object):
                     data -= add_offset
                 if scale_factor is not None:
                     data /= scale_factor
+
             sl_out = slice(i - i_start, i - i_start + buffer_size)
             handler_eddies[sl_out] = data
 
@@ -899,6 +956,8 @@ class EddiesObservations(object):
         else:
             args, kwargs = (filename,), dict()
         with Dataset(*args, **kwargs) as h_nc:
+            _check_versions(getattr(h_nc, "framework_version", None))
+
             var_list = cls.build_var_list(
                 list(h_nc.variables.keys()), remove_vars, include_vars
             )
@@ -1013,6 +1072,17 @@ class EddiesObservations(object):
                     input_unit,
                     output_unit,
                 )
+            return factor
+        else:
+            return 1
+
+    @classmethod
+    def from_array(cls, arrays, **kwargs):
+        nb = arrays["time"].size
+        eddies = cls(size=nb, **kwargs)
+        for k, v in arrays.items():
+            eddies.obs[k] = v
+        return eddies
 
     @classmethod
     def from_zarr(cls, handler):
@@ -1030,6 +1100,7 @@ class EddiesObservations(object):
                 eddies.obs[variable] = handler.variables[variable][:]
             else:
                 eddies.obs[VAR_DESCR_inv[variable]] = handler.variables[variable][:]
+        eddies.sign_type = handler.rotation_type
         return eddies
 
     @classmethod
@@ -1048,6 +1119,7 @@ class EddiesObservations(object):
                 eddies.obs[variable] = handler.variables[variable][:]
             else:
                 eddies.obs[VAR_DESCR_inv[variable]] = handler.variables[variable][:]
+        eddies.sign_type = handler.rotation_type
         return eddies
 
     def propagate(
@@ -1267,7 +1339,7 @@ class EddiesObservations(object):
             if isinstance(minor, ndarray):
                 minor = minor[index_self]
             # focal distance
-            f_degree = ((major ** 2 - minor ** 2) ** 0.5) / (
+            f_degree = ((major**2 - minor**2) ** 0.5) / (
                 111.2 * cos(radians(self.lat[index_self]))
             )
 
@@ -1328,8 +1400,15 @@ class EddiesObservations(object):
 
     @staticmethod
     def solve_simultaneous(cost):
-        """Write something (TODO)"""
+        """Deduce link from cost matrix.
+
+        :param array(float) cost: Cost for each available link
+        :return: return a boolean mask array, True for each valid couple
+        :rtype: array(bool)
+        """
         mask = ~cost.mask
+        if mask.size == 0:
+            return mask
         # Count number of links by self obs and other obs
         self_links, other_links = sum_row_column(mask)
         max_links = max(self_links.max(), other_links.max())
@@ -1469,8 +1548,7 @@ class EddiesObservations(object):
             handler.attrs["track_array_variables"] = self.track_array_variables
             handler.attrs["array_variables"] = ",".join(self.array_variables)
         # Iter on variables to create:
-        fields = [field[0] for field in self.observations.dtype.descr]
-        for ori_name in fields:
+        for ori_name in self.fields:
             # Patch for a transition
             name = ori_name
             #
@@ -1515,12 +1593,9 @@ class EddiesObservations(object):
             handler.track_array_variables = self.track_array_variables
             handler.array_variables = ",".join(self.array_variables)
         # Iter on variables to create:
-        fields = [field[0] for field in self.observations.dtype.descr]
-        fields_ = array(
-            [VAR_DESCR[field[0]]["nc_name"] for field in self.observations.dtype.descr]
-        )
+        fields_ = array([VAR_DESCR[field]["nc_name"] for field in self.fields])
         i = fields_.argsort()
-        for ori_name in array(fields)[i]:
+        for ori_name in array(self.fields)[i]:
             # Patch for a transition
             name = ori_name
             #
@@ -1586,6 +1661,33 @@ class EddiesObservations(object):
                 var.setncattr("max", var[:].max())
         except ValueError:
             logger.warning("Data is empty")
+
+    @staticmethod
+    def get_filters_zarr(name):
+        """Get filters to store in zarr for known variable
+
+        :param str name: private variable name
+        :return list: filters list
+        """
+        content = VAR_DESCR.get(name)
+        filters = list()
+        store_dtype = content["output_type"]
+        scale_factor, add_offset = content.get("scale_factor", None), content.get(
+            "add_offset", None
+        )
+        if scale_factor is not None or add_offset is not None:
+            if add_offset is None:
+                add_offset = 0
+            filters.append(
+                zarr.FixedScaleOffset(
+                    offset=add_offset,
+                    scale=1 / scale_factor,
+                    dtype=content["nc_type"],
+                    astype=store_dtype,
+                )
+            )
+        filters.extend(content.get("filters", []))
+        return filters
 
     def create_variable_zarr(
         self,
@@ -1676,7 +1778,8 @@ class EddiesObservations(object):
             handler = zarr.open(filename, "w")
             self.to_zarr(handler, **kwargs)
         else:
-            with Dataset(filename, "w", format="NETCDF4") as handler:
+            nc_format = kwargs.pop("format", "NETCDF4")
+            with Dataset(filename, "w", format=nc_format) as handler:
                 self.to_netcdf(handler, **kwargs)
 
     @property
@@ -1766,10 +1869,9 @@ class EddiesObservations(object):
         if nb_obs == 0:
             logger.warning("Empty dataset will be created")
         else:
-            for field in self.obs.dtype.descr:
+            for field in self.fields:
                 logger.debug("Copy of field %s ...", field)
-                var = field[0]
-                new.obs[var] = self.obs[var][mask]
+                new.obs[field] = self.obs[field][mask]
         return new
 
     def scatter(self, ax, name=None, ref=None, factor=1, **kwargs):
@@ -1973,11 +2075,43 @@ class EddiesObservations(object):
             nb_obs=len(self),
         )
 
+    def display_color(self, ax, field, ref=None, intern=False, **kwargs):
+        """Plot colored contour of eddies
+
+        :param matplotlib.axes.Axes ax: matplotlib axe used to draw
+        :param str,array field: color field
+        :param float,None ref: if defined, all coordinates are wrapped with ref as western boundary
+        :param bool intern: if True, draw the speed contour
+        :param dict kwargs: look at :py:meth:`matplotlib.collections.LineCollection`
+
+        .. minigallery:: py_eddy_tracker.EddiesObservations.display_color
+        """
+        xname, yname = self.intern(intern)
+        x, y = self[xname], self[yname]
+
+        if ref is not None:
+            # TODO : maybe buggy with global display
+            shape_out = x.shape
+            x, y = wrap_longitude(x.reshape(-1), y.reshape(-1), ref)
+            x, y = x.reshape(shape_out), y.reshape(shape_out)
+
+        c = self.parse_varname(field)
+        cmap = get_cmap(kwargs.pop("cmap", "Spectral_r"))
+        cmin, cmax = kwargs.pop("vmin", c.min()), kwargs.pop("vmax", c.max())
+        colors = cmap((c - cmin) / (cmax - cmin))
+        lines = LineCollection(
+            [create_vertice(i, j) for i, j in zip(x, y)], colors=colors, **kwargs
+        )
+        ax.add_collection(lines)
+        lines.cmap = cmap
+        lines.norm = Normalize(vmin=cmin, vmax=cmax)
+        return lines
+
     def display(self, ax, ref=None, extern_only=False, intern_only=False, **kwargs):
         """Plot the speed and effective (dashed) contour of the eddies
 
         :param matplotlib.axes.Axes ax: matplotlib axe used to draw
-        :param float,None ref: western longitude reference used
+        :param float,None ref: if defined, all coordinates are wrapped with ref as western boundary
         :param bool extern_only: if True, draw only the effective contour
         :param bool intern_only: if True, draw only the speed contour
         :param dict kwargs: look at :py:meth:`matplotlib.axes.Axes.plot`
@@ -2045,7 +2179,7 @@ class EddiesObservations(object):
 
     def contains(self, x, y, intern=False):
         """
-        Return index of contour which contain (x,y)
+        Return index of contour containing (x,y)
 
         :param array x: longitude
         :param array y: latitude
@@ -2056,7 +2190,9 @@ class EddiesObservations(object):
         xname, yname = self.intern(intern)
         m = ~(isnan(x) + isnan(y))
         i = -ones(x.shape, dtype="i4")
-        i[m] = poly_indexs(x[m], y[m], self[xname], self[yname])
+
+        if x.size != 0 and m.any():
+            i[m] = poly_indexs(x[m], y[m], self[xname], self[yname])
         return i
 
     def inside(self, x, y, intern=False):
@@ -2070,7 +2206,6 @@ class EddiesObservations(object):
         :rtype: array[bool]
         """
         xname, yname = self.intern(intern)
-        # FIXME: wrapping
         return insidepoly(x, y, self[xname], self[yname])
 
     def grid_count(self, bins, intern=False, center=False, filter=slice(None)):
@@ -2277,6 +2412,22 @@ class EddiesObservations(object):
         :rtype: int
         """
         return self.period[1] - self.period[0] + 1
+
+    def create_particles(self, step, intern=True):
+        """Create particles inside contour (Default : speed contour). Avoid creating too large numpy arrays, only to be masked
+
+        :param step: step for particles
+        :type step: float
+        :param bool intern: If true use speed contour instead of effective contour
+        :return: lon, lat and indices of particles
+        :rtype: tuple(np.array)
+        """
+
+        xname, yname = self.intern(intern)
+        return create_meshed_particles(self[xname], self[yname], step)
+
+    def empty_dataset(self):
+        return self.new_like(self, 0)
 
 
 @njit(cache=True)

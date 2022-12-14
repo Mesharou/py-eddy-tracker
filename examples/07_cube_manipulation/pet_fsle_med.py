@@ -14,7 +14,7 @@ Example use a method similar to `AVISO flse`_
 
 from matplotlib import pyplot as plt
 from numba import njit
-from numpy import arange, arctan2, empty, isnan, log2, ma, meshgrid, ones, pi, zeros
+from numpy import arange, arctan2, empty, isnan, log, ma, meshgrid, ones, pi, zeros
 
 from py_eddy_tracker import start_logger
 from py_eddy_tracker.data import get_demo_path
@@ -26,6 +26,10 @@ start_logger().setLevel("ERROR")
 # %%
 # ADT in med
 # ----------
+# :py:meth:`~py_eddy_tracker.dataset.grid.GridCollection.from_netcdf_cube` method is
+# made for data stores in time cube, you could use also
+# :py:meth:`~py_eddy_tracker.dataset.grid.GridCollection.from_netcdf_list` method to
+# load data-cube from multiple file.
 c = GridCollection.from_netcdf_cube(
     get_demo_path("dt_med_allsat_phy_l4_2005T2.nc"),
     "longitude",
@@ -45,7 +49,7 @@ def check_p(x, y, flse, theta, m_set, m, dt, dist_init=0.02, dist_max=0.6):
     Check if distance between eastern or northern particle to center particle is bigger than `dist_max`
     """
     nb_p = x.shape[0] // 3
-    delta = dist_max ** 2
+    delta = dist_max**2
     for i in range(nb_p):
         i0 = i * 3
         i_n = i0 + 1
@@ -55,10 +59,10 @@ def check_p(x, y, flse, theta, m_set, m, dt, dist_init=0.02, dist_max=0.6):
             continue
         # Distance with north
         dxn, dyn = x[i0] - x[i_n], y[i0] - y[i_n]
-        dn = dxn ** 2 + dyn ** 2
+        dn = dxn**2 + dyn**2
         # Distance with east
         dxe, dye = x[i0] - x[i_e], y[i0] - y[i_e]
-        de = dxe ** 2 + dye ** 2
+        de = dxe**2 + dye**2
 
         if dn >= delta or de >= delta:
             s1 = dn + de
@@ -67,7 +71,7 @@ def check_p(x, y, flse, theta, m_set, m, dt, dist_init=0.02, dist_max=0.6):
             s2 = ((dxn + dye) ** 2 + (dxe - dyn) ** 2) * (
                 (dxn - dye) ** 2 + (dxe + dyn) ** 2
             )
-            flse[i] = 1 / (2 * dt) * log2(1 / (2 * dist_init ** 2) * (s1 + s2 ** 0.5))
+            flse[i] = 1 / (2 * dt) * log(1 / (2 * dist_init**2) * (s1 + s2**0.5))
             theta[i] = arctan2(at1, at2 + s2) * 180 / pi
             # To know where value are set
             m_set[i] = False
@@ -138,8 +142,10 @@ x, y = build_triplet(x0, y0, dist_init)
 used = zeros(x.shape[0], dtype="bool")
 
 # advection generator
-kw = dict(t_init=t0, nb_step=1, backward=backward, mask_particule=used)
-p = c.advect(x, y, "u", "v", time_step=86400 / time_step_by_days, **kw)
+kw = dict(
+    t_init=t0, nb_step=1, backward=backward, mask_particule=used, u_name="u", v_name="v"
+)
+p = c.advect(x, y, time_step=86400 / time_step_by_days, **kw)
 
 # We check at each step of advection if particle distance is over `dist_max`
 for i in range(time_step_by_days * nb_days):
@@ -176,7 +182,7 @@ ax = fig.add_axes([0.03, 0.03, 0.90, 0.94])
 ax.set_xlim(-6, 36.5), ax.set_ylim(30, 46)
 ax.set_aspect("equal")
 ax.set_title("Finite size lyapunov exponent", weight="bold")
-kw = dict(cmap="viridis_r", vmin=-15, vmax=0)
+kw = dict(cmap="viridis_r", vmin=-20, vmax=0)
 m = fsle_custom.display(ax, 1 / fsle_custom.grid("fsle"), **kw)
 ax.grid()
 _ = plt.colorbar(m, cax=fig.add_axes([0.94, 0.05, 0.01, 0.9]))

@@ -4,12 +4,15 @@ GUI class
 """
 
 from datetime import datetime, timedelta
+import logging
 
+from matplotlib.projections import register_projection
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.projections import register_projection
 
 from .generic import flatten_line_matrix, split_line
+
+logger = logging.getLogger("pet")
 
 try:
     from pylook.axes import PlatCarreAxes
@@ -26,12 +29,15 @@ except ImportError:
             self.set_aspect("equal")
 
 
+GUI_AXES = "full_axes"
+
+
 class GUIAxes(PlatCarreAxes):
     """
     Axes that uses full space available
     """
 
-    name = "full_axes"
+    name = GUI_AXES
 
     def end_pan(self, *args, **kwargs):
         (x0, x1), (y0, y1) = self.get_xlim(), self.get_ylim()
@@ -88,7 +94,7 @@ class GUI:
         for dataset in self.datasets.values():
             t0_, t1_ = dataset.period
             t0, t1 = min(t0, t0_), max(t1, t1_)
-
+        logger.debug("period detected %f -> %f", t0, t1)
         self.settings = dict(period=(t0, t1), now=t1)
 
     @property
@@ -125,7 +131,7 @@ class GUI:
     def setup(self):
         self.figure = plt.figure()
         # map
-        self.map = self.figure.add_axes((0, 0.25, 1, 0.75), projection="full_axes")
+        self.map = self.figure.add_axes((0, 0.25, 1, 0.75), projection=GUI_AXES)
         self.map.grid()
         self.map.tick_params("both", pad=-22)
         # self.map.tick_params("y", pad=-22)
@@ -288,8 +294,8 @@ class GUI:
         i_first = d.index_from_track[tr]
         track = d.obs[i_first : i_first + nb]
         nb -= 1
-        t0 = timedelta(days=int(track[0]["time"])) + datetime(1950, 1, 1)
-        t1 = timedelta(days=int(track[-1]["time"])) + datetime(1950, 1, 1)
+        t0 = timedelta(days=track[0]["time"]) + datetime(1950, 1, 1)
+        t1 = timedelta(days=track[-1]["time"]) + datetime(1950, 1, 1)
         txt = f"--{name}--\n"
         txt += f"    {t0} -> {t1}\n"
         txt += f"    Tracks : {tr}  {now['n']}/{nb} ({now['n'] / nb * 100:.2f} %)\n"

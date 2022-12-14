@@ -24,16 +24,16 @@ from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 from numpy import arange, meshgrid, zeros
 
-import py_eddy_tracker.gui
 from py_eddy_tracker.data import get_demo_path
 from py_eddy_tracker.dataset.grid import RegularGridDataset
+from py_eddy_tracker.gui import GUI_AXES
 from py_eddy_tracker.observations.observation import EddiesObservations
 
 
 # %%
 def start_ax(title="", dpi=90):
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1], projection="full_axes")
+    ax = fig.add_axes([0, 0, 1, 1], projection=GUI_AXES)
     ax.set_xlim(0, 32), ax.set_ylim(28, 46)
     ax.set_title(title)
     return fig, ax, ax.text(3, 32, "", fontsize=20)
@@ -65,7 +65,7 @@ class VideoAnimation(FuncAnimation):
 
     def save(self, *args, **kwargs):
         if args[0].endswith("gif"):
-            # In this case gif is use to create thumbnail which are not use but consume same time than video
+            # In this case gif is used to create thumbnail which is not used but consume same time than video
             # So we create an empty file, to save time
             with open(args[0], "w") as _:
                 pass
@@ -110,9 +110,11 @@ print(f"{len(x)} particles advected")
 step_by_day = 3
 # Compute step of advection every 4h
 nb_step = 2
-kw_p = dict(nb_step=nb_step, time_step=86400 / step_by_day / nb_step)
+kw_p = dict(
+    nb_step=nb_step, time_step=86400 / step_by_day / nb_step, u_name="u", v_name="v"
+)
 # Start a generator which at each iteration return new position at next time step
-particule = g.advect(x, y, "u", "v", **kw_p, rk4=True)
+particule = g.advect(x, y, **kw_p, rk4=True)
 
 # %%
 # LAVD
@@ -142,8 +144,9 @@ def update(i_frame):
 
 kw_video = dict(frames=arange(nb_time), interval=1000.0 / step_by_day / 2, blit=True)
 fig, ax, txt = start_ax(dpi=60)
-x_g_, y_g_ = arange(0 - step / 2, 36 + step / 2, step), arange(
-    28 - step / 2, 46 + step / 2, step
+x_g_, y_g_ = (
+    arange(0 - step / 2, 36 + step / 2, step),
+    arange(28 - step / 2, 46 + step / 2, step),
 )
 # pcolorfast will be faster than pcolormesh, we could use pcolorfast due to x and y are regular
 pcolormesh = ax.pcolorfast(x_g_, y_g_, lavd, **kw_vorticity)
@@ -157,13 +160,7 @@ _ = VideoAnimation(ax.figure, update, **kw_video)
 # %%
 # Format LAVD data
 lavd = RegularGridDataset.with_array(
-    coordinates=("lon", "lat"),
-    datas=dict(
-        lavd=lavd.T,
-        lon=x_g,
-        lat=y_g,
-    ),
-    centered=True,
+    coordinates=("lon", "lat"), datas=dict(lavd=lavd.T, lon=x_g, lat=y_g), centered=True
 )
 
 # %%

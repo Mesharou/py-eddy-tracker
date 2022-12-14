@@ -9,8 +9,7 @@ Two detections are provided : with a filtered ADT and without filtering
 """
 from datetime import datetime
 
-from matplotlib import pyplot as plt
-from matplotlib import style
+from matplotlib import pyplot as plt, style
 
 from py_eddy_tracker import data
 from py_eddy_tracker.dataset.grid import RegularGridDataset

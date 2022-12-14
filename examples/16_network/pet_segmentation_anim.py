@@ -10,8 +10,8 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.colors import ListedColormap
 from numpy import ones, where
 
-import py_eddy_tracker.gui
 from py_eddy_tracker.data import get_demo_path
+from py_eddy_tracker.gui import GUI_AXES
 from py_eddy_tracker.observations.network import NetworkObservations
 from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
@@ -27,7 +27,7 @@ class VideoAnimation(FuncAnimation):
 
     def save(self, *args, **kwargs):
         if args[0].endswith("gif"):
-            # In this case gif is use to create thumbnail which are not use but consume same time than video
+            # In this case gif is used to create thumbnail which is not used but consume same time than video
             # So we create an empty file, to save time
             with open(args[0], "w") as _:
                 pass
@@ -96,15 +96,14 @@ def update(i_frame):
 
     indices_frames = INDICES[i_frame]
     mappable_CONTOUR.set_data(
-        e.contour_lon_e[indices_frames],
-        e.contour_lat_e[indices_frames],
+        e.contour_lon_e[indices_frames], e.contour_lat_e[indices_frames]
     )
     mappable_CONTOUR.set_color(cmap.colors[tr[indices_frames] % len(cmap.colors)])
     return (mappable_tracks,)
 
 
 fig = plt.figure(figsize=(16, 9), dpi=60)
-ax = fig.add_axes([0.04, 0.06, 0.94, 0.88], projection="full_axes")
+ax = fig.add_axes([0.04, 0.06, 0.94, 0.88], projection=GUI_AXES)
 ax.set_title(f"{len(e)} observations to segment")
 ax.set_xlim(19, 29), ax.set_ylim(31, 35.5), ax.grid()
 vmax = TRACKS[-1].max()
@@ -121,6 +120,6 @@ ani = VideoAnimation(fig, update, frames=range(1, len(TRACKS), 4), interval=125)
 # Final Result
 # ------------
 fig = plt.figure(figsize=(16, 9))
-ax = fig.add_axes([0.04, 0.06, 0.94, 0.88], projection="full_axes")
+ax = fig.add_axes([0.04, 0.06, 0.94, 0.88], projection=GUI_AXES)
 ax.set_xlim(19, 29), ax.set_ylim(31, 35.5), ax.grid()
 _ = ax.scatter(e.lon, e.lat, c=TRACKS[-1], cmap=cmap, vmin=0, vmax=vmax, s=20)

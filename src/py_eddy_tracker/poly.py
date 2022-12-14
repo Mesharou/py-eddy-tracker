@@ -5,11 +5,10 @@ Method for polygon
 
 import heapq
 
-from numba import njit, prange
-from numba import types as numba_types
+from Polygon import Polygon
+from numba import njit, prange, types as numba_types
 from numpy import arctan, array, concatenate, empty, nan, ones, pi, where, zeros
 from numpy.linalg import lstsq
-from Polygon import Polygon
 
 from .generic import build_index
 
@@ -86,7 +85,7 @@ def poly_area_vertice(v):
 @njit(cache=True)
 def poly_area(x, y):
     """
-    Must be call with local coordinates (in m, to get an area in m²).
+    Must be called with local coordinates (in m, to get an area in m²).
 
     :param array x:
     :param array y:
@@ -287,6 +286,27 @@ def close_center(x0, y0, x1, y1, delta=0.1):
     return array(i), array(j), array(c)
 
 
+@njit(cache=True)
+def create_meshed_particles(lons, lats, step):
+    x_out, y_out, i_out = list(), list(), list()
+    nb = lons.shape[0]
+    for i in range(nb):
+        lon, lat = lons[i], lats[i]
+        vertice = create_vertice(*reduce_size(lon, lat))
+        lon_min, lon_max = lon.min(), lon.max()
+        lat_min, lat_max = lat.min(), lat.max()
+        y0 = lat_min - lat_min % step
+        x = lon_min - lon_min % step
+        while x <= lon_max:
+            y = y0
+            while y <= lat_max:
+                if winding_number_poly(x, y, vertice):
+                    x_out.append(x), y_out.append(y), i_out.append(i)
+                y += step
+            x += step
+    return array(x_out), array(y_out), array(i_out)
+
+
 @njit(cache=True, fastmath=True)
 def bbox_intersection(x0, y0, x1, y1):
     """
@@ -411,7 +431,9 @@ def merge(x, y):
     return concatenate(x), concatenate(y)
 
 
-def vertice_overlap(x0, y0, x1, y1, minimal_area=False):
+def vertice_overlap(
+    x0, y0, x1, y1, minimal_area=False, p1_area=False, hybrid_area=False, min_overlap=0
+):
     r"""
     Return percent of overlap for each item.
 
@@ -420,6 +442,10 @@ def vertice_overlap(x0, y0, x1, y1, minimal_area=False):
     :param array x1: x for polygon list 1
     :param array y1: y for polygon list 1
     :param bool minimal_area: If True, function will compute intersection/little polygon, else intersection/union
+    :param bool p1_area: If True, function will compute intersection/p1 polygon, else intersection/union
+    :param bool hybrid_area: If True, function will compute like union,
+                             but if cost is under min_overlap, obs is kept in case of fully included
+    :param float min_overlap: under this value cost is set to zero
     :return: Result of cost function
     :rtype: array
 
@@ -430,6 +456,10 @@ def vertice_overlap(x0, y0, x1, y1, minimal_area=False):
     If minimal area:
 
         .. math:: Score = \frac{Intersection(P_0,P_1)_{area}}{min(P_{0 area},P_{1 area})}
+
+    If P1 area:
+
+        .. math:: Score = \frac{Intersection(P_0,P_1)_{area}}{P_{1 area}}
     """
     nb = x0.shape[0]
     cost = empty(nb)
@@ -441,11 +471,29 @@ def vertice_overlap(x0, y0, x1, y1, minimal_area=False):
         # Area of intersection
         intersection = (p0 & p1).area()
         # we divide intersection with the little one result from 0 to 1
+        if intersection == 0:
+            cost[i] = 0
+            continue
+        p0_area_, p1_area_ = p0.area(), p1.area()
         if minimal_area:
-            cost[i] = intersection / min(p0.area(), p1.area())
+            cost_ = intersection / min(p0_area_, p1_area_)
+        # we divide intersection with p1
+        elif p1_area:
+            cost_ = intersection / p1_area_
         # we divide intersection with polygon merging result from 0 to 1
         else:
-            cost[i] = intersection / (p0 + p1).area()
+            cost_ = intersection / (p0_area_ + p1_area_ - intersection)
+        if cost_ >= min_overlap:
+            cost[i] = cost_
+        else:
+            if (
+                hybrid_area
+                and cost_ != 0
+                and (intersection / min(p0_area_, p1_area_)) > 0.99
+            ):
+                cost[i] = cost_
+            else:
+                cost[i] = 0
     return cost
 
 
@@ -495,7 +543,7 @@ def fit_circle(x, y):
 
     norme = (x[1:] - x_mean) ** 2 + (y[1:] - y_mean) ** 2
     norme_max = norme.max()
-    scale = norme_max ** 0.5
+    scale = norme_max**0.5
 
     # Form matrix equation and solve it
     # Maybe put f4
@@ -506,7 +554,7 @@ def fit_circle(x, y):
     (x0, y0, radius), _, _, _ = lstsq(datas, norme / norme_max)
 
     # Unscale data and get circle variables
-    radius += x0 ** 2 + y0 ** 2
+    radius += x0**2 + y0**2
     radius **= 0.5
     x0 *= scale
     y0 *= scale
@@ -538,21 +586,21 @@ def fit_ellipse(x, y):
     """
     nb = x.shape[0]
     datas = ones((nb, 5), dtype=x.dtype)
-    datas[:, 0] = x ** 2
+    datas[:, 0] = x**2
     datas[:, 1] = x * y
-    datas[:, 2] = y ** 2
+    datas[:, 2] = y**2
     datas[:, 3] = x
     datas[:, 4] = y
     (a, b, c, d, e), _, _, _ = lstsq(datas, ones(nb, dtype=x.dtype))
-    det = b ** 2 - 4 * a * c
+    det = b**2 - 4 * a * c
     if det > 0:
         print(det)
     x0 = (2 * c * d - b * e) / det
     y0 = (2 * a * e - b * d) / det
 
-    AB1 = 2 * (a * e ** 2 + c * d ** 2 - b * d * e - det)
+    AB1 = 2 * (a * e**2 + c * d**2 - b * d * e - det)
     AB2 = a + c
-    AB3 = ((a - c) ** 2 + b ** 2) ** 0.5
+    AB3 = ((a - c) ** 2 + b**2) ** 0.5
     A = -((AB1 * (AB2 + AB3)) ** 0.5) / det
     B = -((AB1 * (AB2 - AB3)) ** 0.5) / det
     theta = arctan((c - a - AB3) / b)
@@ -613,7 +661,7 @@ def fit_circle_(x, y):
     # Linear regression
     (a, b, c), _, _, _ = lstsq(datas, x[1:] ** 2 + y[1:] ** 2)
     x0, y0 = a / 2.0, b / 2.0
-    radius = (c + x0 ** 2 + y0 ** 2) ** 0.5
+    radius = (c + x0**2 + y0**2) ** 0.5
     err = shape_error(x, y, x0, y0, radius)
     return x0, y0, radius, err
 
@@ -638,14 +686,14 @@ def shape_error(x, y, x0, y0, r):
     :rtype: float
     """
     # circle area
-    c_area = (r ** 2) * pi
+    c_area = (r**2) * pi
     p_area = poly_area(x, y)
     nb = x.shape[0]
     x, y = x.copy(), y.copy()
     # Find distance between circle center and polygon
     for i in range(nb):
         dx, dy = x[i] - x0, y[i] - y0
-        rd = r / (dx ** 2 + dy ** 2) ** 0.5
+        rd = r / (dx**2 + dy**2) ** 0.5
         if rd < 1:
             x[i] = x0 + dx * rd
             y[i] = y0 + dy * rd
@@ -716,50 +764,86 @@ def tri_area2(x, y, i0, i1, i2):
 def visvalingam(x, y, fixed_size=18):
     """Polygon simplification with visvalingam algorithm
 
+    X, Y are considered like a polygon, the next point after the last one is the first one
+
     :param array x:
     :param array y:
     :param int fixed_size: array size of out
-    :return: New (x, y) array
+    :return:
+        New (x, y) array, last position will be equal to first one, if array size is 6,
+        there is only 5 point.
     :rtype: array,array
+
+    .. plot::
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from py_eddy_tracker.poly import visvalingam
+
+        x = np.array([1, 2, 3, 4, 5, 6.75, 6, 1])
+        y = np.array([-0.5, -1.5, -1, -1.75, -1, -1, -0.5, -0.5])
+        ax = plt.subplot(111)
+        ax.set_aspect("equal")
+        ax.grid(True), ax.set_ylim(-2, -.2)
+        ax.plot(x, y, "r",  lw=5)
+        ax.plot(*visvalingam(x,y,6), "b", lw=2)
+        plt.show()
     """
+    # TODO :  in case of original size lesser than fixed size, jump at the end
     nb = x.shape[0]
-    i0, i1 = nb - 3, nb - 2
+    nb_ori = nb
+    # Get indice of first triangle
+    i0, i1 = nb - 2, nb - 1
+    # Init heap with first area and tiangle
     h = [(tri_area2(x, y, i0, i1, 0), (i0, i1, 0))]
+    # Roll index for next one
     i0 = i1
     i1 = 0
-    i_previous = empty(nb - 1, dtype=numba_types.int32)
-    i_next = empty(nb - 1, dtype=numba_types.int32)
+    # Index of previous valid point
+    i_previous = empty(nb, dtype=numba_types.int64)
+    # Index of next valid point
+    i_next = empty(nb, dtype=numba_types.int64)
+    # Mask of removed
+    removed = zeros(nb, dtype=numba_types.bool_)
     i_previous[0] = -1
     i_next[0] = -1
-    for i in range(1, nb - 1):
+    for i in range(1, nb):
         i_previous[i] = -1
         i_next[i] = -1
+        # We add triangle area for all triangle
         heapq.heappush(h, (tri_area2(x, y, i0, i1, i), (i0, i1, i)))
         i0 = i1
         i1 = i
     # we continue until we are equal to nb_pt
-    while len(h) >= fixed_size:
+    while nb >= fixed_size:
         # We pop lower area
         _, (i0, i1, i2) = heapq.heappop(h)
         # We check if triangle is valid(i0 or i2 not removed)
-        i_p, i_n = i_previous[i0], i_next[i2]
-        if i_p == -1 and i_n == -1:
-            # We store reference of delete point
-            i_previous[i1] = i0
-            i_next[i1] = i2
+        if removed[i0] or removed[i2]:
+            # In this cas nothing to do
             continue
-        elif i_p == -1:
-            i2 = i_n
-        elif i_n == -1:
-            i0 = i_p
-        else:
-            # in this case we replace two point
-            i0, i2 = i_p, i_n
-        heapq.heappush(h, (tri_area2(x, y, i0, i1, i2), (i0, i1, i2)))
+        # Flag obs like removed
+        removed[i1] = True
+        # We count point still valid
+        nb -= 1
+        # Modify index for the next and previous, we jump over i1
+        i_previous[i2] = i0
+        i_next[i0] = i2
+        # We insert 2 triangles which are modified by the deleted point
+        # Previous triangle
+        i_1 = i_previous[i0]
+        if i_1 == -1:
+            i_1 = (i0 - 1) % nb_ori
+        heapq.heappush(h, (tri_area2(x, y, i_1, i0, i2), (i_1, i0, i2)))
+        # Previous triangle
+        i3 = i_next[i2]
+        if i3 == -1:
+            i3 = (i2 + 1) % nb_ori
+        heapq.heappush(h, (tri_area2(x, y, i0, i2, i3), (i0, i2, i3)))
     x_new, y_new = empty(fixed_size, dtype=x.dtype), empty(fixed_size, dtype=y.dtype)
     j = 0
-    for i, i_n in enumerate(i_next):
-        if i_n == -1:
+    for i, flag in enumerate(removed):
+        if not flag:
             x_new[j] = x[i]
             y_new[j] = y[i]
             j += 1
@@ -818,8 +902,8 @@ def poly_indexs(x_p, y_p, x_c, y_c):
     """
     Index of contour for each postion inside a contour, -1 in case of no contour
 
-    :param array x_p: longitude to test (must be define, no nan)
-    :param array y_p: latitude to test (must be define, no nan)
+    :param array x_p: longitude to test (must be defined, no nan)
+    :param array y_p: latitude to test (must be defined, no nan)
     :param array x_c: longitude of contours
     :param array y_c: latitude of contours
     """
@@ -829,7 +913,7 @@ def poly_indexs(x_p, y_p, x_c, y_c):
     nb_p = x_p.shape[0]
     nb_c = x_c.shape[0]
     indexs = -ones(nb_p, dtype=numba_types.int32)
-    # Adress table to get particle bloc
+    # Adress table to get test bloc
     start_index, end_index, i_first = build_index(i[i_order])
     nb_bloc = end_index.size
     for i_contour in range(nb_c):
@@ -873,34 +957,6 @@ def poly_indexs(x_p, y_p, x_c, y_c):
 
 
 @njit(cache=True)
-def poly_indexs_old(x_p, y_p, x_c, y_c):
-    """
-    index of contour for each postion inside a contour, -1 in case of no contour
-
-    :param array x_p: longitude to test
-    :param array y_p: latitude to test
-    :param array x_c: longitude of contours
-    :param array y_c: latitude of contours
-    """
-    nb_p = x_p.shape[0]
-    nb_c = x_c.shape[0]
-    indexs = -ones(nb_p, dtype=numba_types.int32)
-    for i in range(nb_c):
-        x_, y_ = reduce_size(x_c[i], y_c[i])
-        x_c_min, y_c_min = x_.min(), y_.min()
-        x_c_max, y_c_max = x_.max(), y_.max()
-        v = create_vertice(x_, y_)
-        for j in range(nb_p):
-            if indexs[j] != -1:
-                continue
-            x, y = x_p[j], y_p[j]
-            if x > x_c_min and x < x_c_max and y > y_c_min and y < y_c_max:
-                if winding_number_poly(x, y, v) != 0:
-                    indexs[j] = i
-    return indexs
-
-
-@njit(cache=True)
 def insidepoly(x_p, y_p, x_c, y_c):
     """
     True for each postion inside a contour
@@ -910,20 +966,4 @@ def insidepoly(x_p, y_p, x_c, y_c):
     :param array x_c: longitude of contours
     :param array y_c: latitude of contours
     """
-    # TODO must be optimize like poly_index
-    nb_p = x_p.shape[0]
-    nb_c = x_c.shape[0]
-    flag = zeros(nb_p, dtype=numba_types.bool_)
-    for i in range(nb_c):
-        x_, y_ = reduce_size(x_c[i], y_c[i])
-        x_c_min, y_c_min = x_.min(), y_.min()
-        x_c_max, y_c_max = x_.max(), y_.max()
-        v = create_vertice(x_, y_)
-        for j in range(nb_p):
-            if flag[j]:
-                continue
-            x, y = x_p[j], y_p[j]
-            if x > x_c_min and x < x_c_max and y > y_c_min and y < y_c_max:
-                if winding_number_poly(x, y, v) != 0:
-                    flag[j] = True
-    return flag
+    return poly_indexs(x_p, y_p, x_c, y_c) != -1

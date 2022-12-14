@@ -11,8 +11,8 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import FuncFormatter
 from numpy import where
 
-import py_eddy_tracker.gui
 from py_eddy_tracker.data import get_demo_path
+from py_eddy_tracker.gui import GUI_AXES
 from py_eddy_tracker.observations.network import NetworkObservations
 from py_eddy_tracker.observations.tracking import TrackEddiesObservations
 
@@ -24,7 +24,7 @@ def formatter(x, pos):
 
 def start_axes(title=""):
     fig = plt.figure(figsize=(13, 6))
-    ax = fig.add_axes([0.03, 0.03, 0.90, 0.94], projection="full_axes")
+    ax = fig.add_axes([0.03, 0.03, 0.90, 0.94], projection=GUI_AXES)
     ax.set_xlim(19, 29), ax.set_ylim(31, 35.5)
     ax.set_aspect("equal")
     ax.set_title(title, weight="bold")
@@ -147,15 +147,9 @@ ax.set_ylabel("Latitude")
 
 ax = timeline_axes()
 n_.median_filter(15, "time", "latitude")
-kw["s"] = (n_.radius_e * 1e-3) ** 2 / 30 ** 2 * 20
+kw["s"] = (n_.radius_e * 1e-3) ** 2 / 30**2 * 20
 m = n_.scatter_timeline(
-    ax,
-    "shape_error_e",
-    vmin=14,
-    vmax=70,
-    **kw,
-    yfield="lon",
-    method="all",
+    ax, "shape_error_e", vmin=14, vmax=70, **kw, yfield="lon", method="all"
 )
 ax.set_ylabel("Longitude")
 cb = update_axes(ax, m["scatter"])

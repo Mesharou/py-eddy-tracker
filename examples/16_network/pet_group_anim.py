@@ -2,9 +2,10 @@
 Network group process
 =====================
 """
+from datetime import datetime
+
 # sphinx_gallery_thumbnail_number = 2
 import re
-from datetime import datetime
 
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -29,7 +30,7 @@ class VideoAnimation(FuncAnimation):
 
     def save(self, *args, **kwargs):
         if args[0].endswith("gif"):
-            # In this case gif is use to create thumbnail which are not use but consume same time than video
+            # In this case gif is used to create thumbnail which is not used but consume same time than video
             # So we create an empty file, to save time
             with open(args[0], "w") as _:
                 pass

@@ -23,10 +23,10 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from numpy import arange, isnan, ma, meshgrid, zeros
 
-import py_eddy_tracker.gui
 from py_eddy_tracker import start_logger
 from py_eddy_tracker.data import get_demo_path
 from py_eddy_tracker.dataset.grid import GridCollection, RegularGridDataset
+from py_eddy_tracker.gui import GUI_AXES
 
 start_logger().setLevel("ERROR")
 
@@ -47,7 +47,7 @@ class LAVDGrid(RegularGridDataset):
 # %%
 def start_ax(title="", dpi=90):
     fig = plt.figure(figsize=(12, 5), dpi=dpi)
-    ax = fig.add_axes([0.05, 0.08, 0.9, 0.9], projection="full_axes")
+    ax = fig.add_axes([0.05, 0.08, 0.9, 0.9], projection=GUI_AXES)
     ax.set_xlim(-6, 36), ax.set_ylim(31, 45)
     ax.set_title(title)
     return fig, ax, ax.text(3, 32, "", fontsize=20)
@@ -93,7 +93,7 @@ for g in c:
 # Time properties, for example with advection only 25 days
 nb_days, step_by_day = 25, 6
 nb_time = step_by_day * nb_days
-kw_p = dict(nb_step=1, time_step=86400 / step_by_day)
+kw_p = dict(nb_step=1, time_step=86400 / step_by_day, u_name="u", v_name="v")
 t0 = 20236
 t0_grid = c[t0]
 # Geographic properties, we use a coarser resolution for time consuming reasons
@@ -114,7 +114,7 @@ m = m.reshape(original_shape)
 # ----------------------------
 lavd = zeros(original_shape)
 lavd_ = lavd[m]
-p = c.advect(x0.copy(), y0.copy(), "u", "v", t_init=t0, **kw_p)
+p = c.advect(x0.copy(), y0.copy(), t_init=t0, **kw_p)
 for _ in range(nb_time):
     t, x, y = p.__next__()
     lavd_ += abs(c.interp("vort", t / 86400.0, x, y))
@@ -131,7 +131,7 @@ _ = update_axes(ax, mappable)
 # -----------------------------
 lavd = zeros(original_shape)
 lavd_ = lavd[m]
-p = c.advect(x0.copy(), y0.copy(), "u", "v", t_init=t0, backward=True, **kw_p)
+p = c.advect(x0.copy(), y0.copy(), t_init=t0, backward=True, **kw_p)
 for i in range(nb_time):
     t, x, y = p.__next__()
     lavd_ += abs(c.interp("vort", t / 86400.0, x, y))
@@ -148,7 +148,7 @@ _ = update_axes(ax, mappable)
 # ---------------------------
 lavd = zeros(original_shape)
 lavd_ = lavd[m]
-p = t0_grid.advect(x0.copy(), y0.copy(), "u", "v", **kw_p)
+p = t0_grid.advect(x0.copy(), y0.copy(), **kw_p)
 for _ in range(nb_time):
     x, y = p.__next__()
     lavd_ += abs(t0_grid.interp("vort", x, y))
@@ -165,7 +165,7 @@ _ = update_axes(ax, mappable)
 # ----------------------------
 lavd = zeros(original_shape)
 lavd_ = lavd[m]
-p = t0_grid.advect(x0.copy(), y0.copy(), "u", "v", backward=True, **kw_p)
+p = t0_grid.advect(x0.copy(), y0.copy(), backward=True, **kw_p)
 for i in range(nb_time):
     x, y = p.__next__()
     lavd_ += abs(t0_grid.interp("vort", x, y))

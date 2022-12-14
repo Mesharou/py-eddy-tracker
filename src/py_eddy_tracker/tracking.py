@@ -3,14 +3,13 @@
 Class to store link between observations
 """
 
+from datetime import datetime, timedelta
 import json
 import logging
 import platform
-from datetime import datetime, timedelta
 
 from netCDF4 import Dataset, default_fillvals
-from numba import njit
-from numba import types as numba_types
+from numba import njit, types as numba_types
 from numpy import (
     arange,
     array,
@@ -161,10 +160,10 @@ class Correspondances(list):
 
         """
         date_start = datetime(1950, 1, 1) + timedelta(
-            int(self.class_method.load_file(self.datasets[0]).time[0])
+            self.class_method.load_file(self.datasets[0]).time[0]
         )
         date_stop = datetime(1950, 1, 1) + timedelta(
-            int(self.class_method.load_file(self.datasets[-1]).time[0])
+            self.class_method.load_file(self.datasets[-1]).time[0]
         )
         return date_start, date_stop
 
@@ -349,6 +348,9 @@ class Correspondances(list):
                     # Load last virtual obs
                     self.virtual_obs = VirtualEddiesObservations.from_netcdf(
                         general_handler.groups["LastVirtualObs"]
+                    )
+                    self.previous_virtual_obs = VirtualEddiesObservations.from_netcdf(
+                        general_handler.groups["LastPreviousVirtualObs"]
                     )
                     # Load and last previous virtual obs to be merge with current => will be previous2_obs
                     # TODO : Need to rethink this line ??
@@ -584,7 +586,10 @@ class Correspondances(list):
     def longer_than(self, size_min):
         """Remove from correspondance table all association for shorter eddies than size_min"""
         # Identify eddies longer than
-        i_keep_track = where(self.nb_obs_by_tracks >= size_min)[0]
+        mask = self.nb_obs_by_tracks >= size_min
+        if not mask.any():
+            return False
+        i_keep_track = where(mask)[0]
         # Reduce array
         self.nb_obs_by_tracks = self.nb_obs_by_tracks[i_keep_track]
         self.i_current_by_tracks = (
@@ -653,7 +658,7 @@ class Correspondances(list):
         # Set type of eddy with first file
         eddies.sign_type = self.current_obs.sign_type
         # Fields to copy
-        fields = self.current_obs.obs.dtype.names
+        fields = self.current_obs.fields
 
         # To know if the track start
         first_obs_save_in_tracks = zeros(self.i_current_by_tracks.shape, dtype=bool_)
@@ -702,7 +707,7 @@ class Correspondances(list):
             # Index in the current file
             index_current = self[i]["out"]
 
-            if "cost_association" in eddies.obs.dtype.names:
+            if "cost_association" in eddies.fields:
                 eddies["cost_association"][index_final - 1] = self[i]["cost_value"]
             # Copy all variable
             for field in fields:

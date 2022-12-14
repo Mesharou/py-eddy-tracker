@@ -20,8 +20,9 @@ Email: evanmason@gmail.com
 
 """
 
-import logging
 from argparse import ArgumentParser
+from datetime import datetime
+import logging
 
 import zarr
 
@@ -32,9 +33,7 @@ del get_versions
 
 
 def start_logger():
-    FORMAT_LOG = (
-        "%(levelname)-8s %(asctime)s %(module)s.%(funcName)s :\n\t\t\t\t\t%(message)s"
-    )
+    FORMAT_LOG = "%(levelname)-8s %(asctime)s %(module)s.%(funcName)s :\n\t%(message)s"
     logger = logging.getLogger("pet")
     if len(logger.handlers) == 0:
         # set up logging to CONSOLE
@@ -108,12 +107,26 @@ class EddyParser(ArgumentParser):
         return opts
 
 
+TIME_MODELS = ["%Y%m%d", "%Y%m%d%H%M%S", "%Y%m%dT%H%M%S"]
+
+
+def identify_time(str_date):
+    for model in TIME_MODELS:
+        try:
+            return datetime.strptime(str_date, model)
+        except ValueError:
+            pass
+    raise Exception("No time model found")
+
+
 VAR_DESCR = dict(
     time=dict(
         attr_name="time",
         nc_name="time",
         old_nc_name=["j1"],
-        nc_type="float32",
+        nc_type="float64",
+        output_type="uint32",
+        scale_factor=1 / 86400.0,
         nc_dims=("obs",),
         nc_attr=dict(
             standard_name="time",
@@ -253,7 +266,7 @@ VAR_DESCR = dict(
         old_nc_name=["A"],
         nc_type="float32",
         output_type="uint16",
-        scale_factor=0.001,
+        scale_factor=0.0001,
         nc_dims=("obs",),
         nc_attr=dict(
             long_name="Amplitude",
@@ -391,7 +404,7 @@ VAR_DESCR = dict(
         nc_dims=("obs",),
         nc_attr=dict(
             long_name="Previous observation index",
-            comment="Index of previous observation in a spliting case",
+            comment="Index of previous observation in a splitting case",
         ),
     ),
     next_obs=dict(

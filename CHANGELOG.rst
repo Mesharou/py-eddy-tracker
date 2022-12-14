@@ -7,13 +7,77 @@ The format is based on `Keep a Changelog <https://keepachangelog.com/en>`_
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`_.
 
 [Unreleased]
-------------
+-------------
 Changed
 ^^^^^^^
+
+- Remove dead end method for network will move dead end to the trash and not remove observations
+
 Fixed
 ^^^^^
+
 Added
 ^^^^^
+
+
+[3.6.1] - 2022-10-14
+--------------------
+Changed
+^^^^^^^
+
+- Rewrite particle candidate to be easily parallelize
+
+Fixed
+^^^^^
+
+- Check strictly increasing coordinates for RegularGridDataset.
+- Grid mask is check to replace mask monovalue by 2D mask with fixed value
+
+Added
+^^^^^
+
+- Add method to colorize contour with a field
+- Add option to force align on to return all step for reference dataset
+- Add method and property to network to easily select segment and network
+- Add method to found same track/segment/network in dataset
+
+[3.6.0] - 2022-01-12
+--------------------
+Changed
+^^^^^^^
+
+- Now time allows second precision (instead of daily precision) in storage on uint32 from 01/01/1950 to 01/01/2086
+  New identifications are produced with this type, old files could still be loaded.
+  If you use old identifications for tracking use the `--unraw` option to unpack old times and store data with the new format.
+- Now amplitude is stored with .1 mm of precision (instead of 1 mm), same advice as for time.
+- Expose more parameters to users for bash tools build_network & divide_network
+- Add warning when loading a file created from a previous version of py-eddy-tracker.
+
+
+
+Fixed
+^^^^^
+
+- Fix bug in convolution(filter), lowest rows was replace by zeros in convolution computation.
+  Important impact for tiny kernel
+- Fix method of sampling before contour fitting
+- Fix bug when loading dataset in zarr format, not all variables were correctly loaded
+- Fix bug when zarr dataset has same size for number of observations and contour size
+- Fix bug when tracking, previous_virtual_obs was not always loaded
+
+Added
+^^^^^
+
+- Allow to replace mask by isnan method to manage nan data instead of masked data
+- Add drifter colocation example
+
+[3.5.0] - 2021-06-22
+--------------------
+
+Fixed
+^^^^^
+- GridCollection get_next_time_step & get_previous_time_step needed more files to work in the dataset list.
+  The loop needed explicitly self.dataset[i+-1] even when i==0, therefore indice went out of range
 
 [3.4.0] - 2021-03-29
 --------------------

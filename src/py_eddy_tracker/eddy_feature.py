@@ -8,8 +8,7 @@ import logging
 from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
-from numba import njit
-from numba import types as numba_types
+from numba import njit, types as numba_types
 from numpy import (
     array,
     concatenate,
@@ -61,13 +60,13 @@ class Amplitude(object):
         """
         Create amplitude object
 
-        :param Contours contour:
-        :param float contour_height:
-        :param array data:
-        :param float interval:
+        :param Contours contour: usefull class defined below
+        :param float contour_height: field value of the contour
+        :param array data: grid
+        :param float interval: step between two contours
         :param int mle: maximum number of local extrema in contour
-        :param int nb_step_min: number of intervals to consider an eddy
-        :param int nb_step_to_be_mle: number of intervals to be considered as an another maxima
+        :param int nb_step_min: minimum number of intervals to consider the contour as an eddy
+        :param int nb_step_to_be_mle: number of intervals to be considered as another extrema
         """
 
         # Height of the contour
@@ -116,8 +115,7 @@ class Amplitude(object):
     def all_pixels_below_h0(self, level, grid_height='sla'):
         """
         Check CSS11 criterion 1: The SSH values of all of the pixels
-        are below (above) a given SSH threshold for cyclonic (anticyclonic)
-        eddies.
+        are below a given SSH threshold for cyclonic eddies.
         """
         # In some cases pixel value may be very close to the contour bounds
         if self.sla.mask.any() or ((self.sla.data - self.h_0) > self.EPSILON).any():
@@ -604,8 +602,8 @@ class Contours(object):
             4. - Amplitude criterion (yellow)
         :param str field:
             Must be 'shape_error', 'x', 'y' or 'radius'.
-            If define display_criterion is not use.
-            bins argument must be define
+            If defined display_criterion is not use.
+            bins argument must be defined
         :param array bins: bins used to colorize contour
         :param str cmap: Name of cmap for field display
         :param dict kwargs: look at :py:meth:`matplotlib.collections.LineCollection`
@@ -649,7 +647,7 @@ class Contours(object):
                     paths.append(i.vertices)
             local_kwargs = kwargs.copy()
             if "color" not in kwargs:
-                local_kwargs["color"] = collection.get_color()
+                local_kwargs["color"] = collection.get_edgecolor()
                 local_kwargs.pop("label", None)
             elif j != 0:
                 local_kwargs.pop("label", None)
@@ -787,7 +785,7 @@ def index_from_nearest_path_with_pt_in_bbox_(
             d_x = x_value[i_elt_pt] - xpt_
             if abs(d_x) > 180:
                 d_x = (d_x + 180) % 360 - 180
-            dist = d_x ** 2 + (y_value[i_elt_pt] - ypt) ** 2
+            dist = d_x**2 + (y_value[i_elt_pt] - ypt) ** 2
             if dist < dist_ref:
                 dist_ref = dist
                 i_ref = i_elt_c

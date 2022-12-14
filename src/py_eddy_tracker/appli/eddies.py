@@ -3,12 +3,11 @@
 Applications on detection and tracking files
 """
 import argparse
-import logging
 from datetime import datetime
 from glob import glob
+import logging
 from os import mkdir
-from os.path import basename, dirname, exists
-from os.path import join as join_path
+from os.path import basename, dirname, exists, join as join_path
 from re import compile as re_compile
 
 from netCDF4 import Dataset
@@ -230,7 +229,7 @@ def browse_dataset_in(
     data_dir,
     files_model,
     date_regexp,
-    date_model,
+    date_model=None,
     start_date=None,
     end_date=None,
     sub_sampling_step=1,
@@ -246,10 +245,7 @@ def browse_dataset_in(
 
     dataset_list = empty(
         len(filenames),
-        dtype=[
-            ("filename", "S500"),
-            ("datetime", npdtype('M8[us]')),
-        ],
+        dtype=[("filename", "S500"), ("date", "datetime64[s]")],
     )
     dataset_list["filename"] = filenames
 
@@ -275,14 +271,15 @@ def browse_dataset_in(
                 str_date = result.groups()[0]
 
         if str_date is not None:
-            item["datetime"] = datetime.strptime(str_date, date_model)
+            if date_model is None:
+                item["date"] = identify_time(str_date)
+            else:
+                item["date"] = datetime.strptime(str_date, date_model)
 
-    dataset_list.sort(order=["datetime", "filename"])
-
-    steps = unique(dataset_list["datetime"][1:] - dataset_list["datetime"][:-1])
+    dataset_list.sort(order=["date", "filename"])
+    steps = unique(dataset_list["date"][1:] - dataset_list["date"][:-1])
     if len(steps) > 1:
-        print("Several days steps in grid dataset %s" % steps)
-        #raise Exception("Several days steps in grid dataset %s" % steps)
+        raise Exception("Several timesteps in grid dataset %s" % steps)
 
     if sub_sampling_step != 1:
         logger.info("Grid subsampling %d", sub_sampling_step)
@@ -331,10 +328,9 @@ def track(
     c = Correspondances(datasets=datasets["filename"], **kw_c)
     c.track()
     logger.info("Track finish")
-    t0, t1 = c.period
     kw_save = dict(
-        date_start=t0,
-        date_stop=t1,
+        date_start=datasets["date"][0],
+        date_stop=datasets["date"][-1],
         date_prod=datetime.now(),
         path=output_dir,
         sign_type=c.current_obs.sign_legend,

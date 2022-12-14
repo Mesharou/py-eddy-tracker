@@ -2,8 +2,8 @@
 """
 Class to manage observations gathered in trajectories
 """
-import logging
 from datetime import datetime, timedelta
+import logging
 
 from numba import njit
 from numpy import (
@@ -16,6 +16,7 @@ from numpy import (
     degrees,
     empty,
     histogram,
+    int_,
     median,
     nan,
     ones,
@@ -67,6 +68,10 @@ class TrackEddiesObservations(GroupEddiesObservations):
         self.__obs_by_track = None
         self.__nb_track = None
 
+    def track_slice(self, track):
+        i0 = self.index_from_track[track]
+        return slice(i0, i0 + self.nb_obs_by_track[track])
+
     def iter_track(self):
         """
         Yield track
@@ -113,7 +118,7 @@ class TrackEddiesObservations(GroupEddiesObservations):
         t0, t1 = self.period
         period = t1 - t0 + 1
         nb = self.nb_obs_by_track
-        nb_obs = self.observations.shape[0]
+        nb_obs = len(self)
         m = self.virtual.astype("bool")
         nb_m = m.sum()
         bins_t = (1, 30, 90, 180, 270, 365, 1000, 10000)
@@ -142,7 +147,7 @@ class TrackEddiesObservations(GroupEddiesObservations):
 
     def add_distance(self):
         """Add a field of distance (m) between two consecutive observations, 0 for the last observation of each track"""
-        if "distance_next" in self.observations.dtype.descr:
+        if "distance_next" in self.fields:
             return self
         new = self.add_fields(("distance_next",))
         new["distance_next"][:1] = self.distance_to_next()
@@ -173,19 +178,21 @@ class TrackEddiesObservations(GroupEddiesObservations):
         - contour_lon_e (how to do if in raw)
         - contour_lon_s (how to do if in raw)
         """
+        if self.lon.size == 0:
+            return
         lon0 = (self.lon[self.index_from_track] - 180).repeat(self.nb_obs_by_track)
         logger.debug("Normalize longitude")
         self.lon[:] = (self.lon - lon0) % 360 + lon0
-        if "lon_max" in self.obs.dtype.names:
+        if "lon_max" in self.fields:
             logger.debug("Normalize longitude_max")
             self.lon_max[:] = (self.lon_max - self.lon + 180) % 360 + self.lon - 180
         if not self.raw_data:
-            if "contour_lon_e" in self.obs.dtype.names:
+            if "contour_lon_e" in self.fields:
                 logger.debug("Normalize effective contour longitude")
                 self.contour_lon_e[:] = (
                     (self.contour_lon_e.T - self.lon + 180) % 360 + self.lon - 180
                 ).T
-            if "contour_lon_s" in self.obs.dtype.names:
+            if "contour_lon_s" in self.fields:
                 logger.debug("Normalize speed contour longitude")
                 self.contour_lon_s[:] = (
                     (self.contour_lon_s.T - self.lon + 180) % 360 + self.lon - 180
@@ -198,10 +205,9 @@ class TrackEddiesObservations(GroupEddiesObservations):
         logger.info("Selection of %d observations", nb_obs_select)
         eddies = self.__class__.new_like(self, nb_obs_select)
         eddies.sign_type = self.sign_type
-        for field in self.obs.dtype.descr:
+        for field in self.fields:
             logger.debug("Copy of field %s ...", field)
-            var = field[0]
-            eddies.obs[var] = self.obs[var][mask]
+            eddies.obs[field] = self.obs[field][mask]
         if compress_id:
             list_id = unique(eddies.obs.track)
             list_id.sort()
@@ -228,12 +234,13 @@ class TrackEddiesObservations(GroupEddiesObservations):
         )
         h_nc.date_created = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
         t = h_nc.variables[VAR_DESCR_inv["j1"]]
-        delta = t.max - t.min + 1
-        h_nc.time_coverage_duration = "P%dD" % delta
-        d_start = datetime(1950, 1, 1) + timedelta(int(t.min))
-        d_end = datetime(1950, 1, 1) + timedelta(int(t.max))
-        h_nc.time_coverage_start = d_start.strftime("%Y-%m-%dT00:00:00Z")
-        h_nc.time_coverage_end = d_end.strftime("%Y-%m-%dT00:00:00Z")
+        if t.size:
+            delta = t.max - t.min + 1
+            h_nc.time_coverage_duration = "P%dD" % delta
+            d_start = datetime(1950, 1, 1) + timedelta(int(t.min))
+            d_end = datetime(1950, 1, 1) + timedelta(int(t.max))
+            h_nc.time_coverage_start = d_start.strftime("%Y-%m-%dT00:00:00Z")
+            h_nc.time_coverage_end = d_end.strftime("%Y-%m-%dT00:00:00Z")
 
     def extract_with_period(self, period, **kwargs):
         """
@@ -378,14 +385,12 @@ class TrackEddiesObservations(GroupEddiesObservations):
         return self.extract_with_mask(m)
 
     def extract_first_obs_in_box(self, res):
-        data = empty(
-            self.obs.shape, dtype=[("lon", "f4"), ("lat", "f4"), ("track", "i4")]
-        )
+        data = empty(len(self), dtype=[("lon", "f4"), ("lat", "f4"), ("track", "i4")])
         data["lon"] = self.longitude - self.longitude % res
         data["lat"] = self.latitude - self.latitude % res
         data["track"] = self.track
         _, indexs = unique(data, return_index=True)
-        mask = zeros(self.obs.shape, dtype="bool")
+        mask = zeros(len(self), dtype="bool")
         mask[indexs] = True
         return self.extract_with_mask(mask)
 
@@ -430,9 +435,6 @@ class TrackEddiesObservations(GroupEddiesObservations):
             raise Exception("One bound must be positive")
         return self.extract_with_mask(track_mask.repeat(self.nb_obs_by_track))
 
-    def empty_dataset(self):
-        return self.new_like(self, 0)
-
     def loess_filter(self, half_window, xfield, yfield, inplace=True):
         track = self.track
         x = self.obs[xfield]
@@ -441,6 +443,7 @@ class TrackEddiesObservations(GroupEddiesObservations):
         if inplace:
             self.obs[yfield] = result
             return self
+        return result
 
     def median_filter(self, half_window, xfield, yfield, inplace=True):
         result = track_median_filter(
@@ -497,12 +500,11 @@ class TrackEddiesObservations(GroupEddiesObservations):
         new = self.__class__.new_like(self, nb_obs)
         new.sign_type = self.sign_type
         if nb_obs == 0:
-            logger.warning("Empty dataset will be created")
+            logger.info("Empty dataset will be created")
         else:
-            for field in self.obs.dtype.descr:
+            for field in self.fields:
                 logger.debug("Copy of field %s ...", field)
-                var = field[0]
-                new.obs[var] = self.obs[var][mask]
+                new.obs[field] = self.obs[field][mask]
             if compress_id:
                 list_id = unique(new.track)
                 list_id.sort()
@@ -563,8 +565,11 @@ class TrackEddiesObservations(GroupEddiesObservations):
             It could be a costly operation for huge dataset
         """
         p0, p1 = self.period
+        p0_other, p1_other = other.period
+        if p1_other < p0 or p1 < p0_other:
+            return other.__class__.new_like(other, 0)
         indexs = list()
-        for i_self, i_other, t0, t1 in self.align_on(other, bins=range(p0, p1 + 2)):
+        for i_self, i_other, t0, t1 in self.align_on(other, bins=arange(p0, p1 + 2)):
             i, j, s = self.match(other, i_self=i_self, i_other=i_other, **kwargs)
             indexs.append(other.re_reference_index(j, i_other))
         indexs = concatenate(indexs)
@@ -601,6 +606,12 @@ class TrackEddiesObservations(GroupEddiesObservations):
 
     def split_network(self, intern=True, **kwargs):
         """Return each group (network) divided in segments"""
+        # Find timestep of dataset
+        # FIXME : how to know exact time sampling
+        t = unique(self.time)
+        dts = t[1:] - t[:-1]
+        timestep = median(dts)
+
         track_s, track_e, track_ref = build_index(self.tracks)
         ids = empty(
             len(self),
@@ -614,7 +625,7 @@ class TrackEddiesObservations(GroupEddiesObservations):
                 ("next_obs", "i4"),
             ],
         )
-        ids["group"], ids["time"] = self.tracks, self.time
+        ids["group"], ids["time"] = self.tracks, int_(self.time / timestep)
         # Initialisation
         # To store the id of the segments, the backward and forward cost associations
         ids["track"], ids["previous_cost"], ids["next_cost"] = 0, 0, 0
@@ -641,19 +652,19 @@ class TrackEddiesObservations(GroupEddiesObservations):
             local_ids["next_obs"][m] += i_s
         if display_iteration:
             print()
+        ids["time"] *= timestep
         return ids
 
     def set_tracks(self, x, y, ids, window, **kwargs):
         """
-        Will split one group (network) in segments
+        Split one group (network) in segments
 
         :param array x: coordinates of group
         :param array y: coordinates of group
         :param ndarray ids: several fields like time, group, ...
-        :param int windows: number of days where observations could missed
+        :param int window: number of days where observations could missed
         """
-
-        time_index = build_index(ids["time"])
+        time_index = build_index((ids["time"]).astype("i4"))
         nb = x.shape[0]
         used = zeros(nb, dtype="bool")
         track_id = 1
@@ -695,11 +706,19 @@ class TrackEddiesObservations(GroupEddiesObservations):
 
     @staticmethod
     def get_previous_obs(
-        i_current, ids, x, y, time_s, time_e, time_ref, window, **kwargs
+        i_current,
+        ids,
+        x,
+        y,
+        time_s,
+        time_e,
+        time_ref,
+        window,
+        min_overlap=0.2,
+        **kwargs,
     ):
         """Backward association of observations to the segments"""
-
-        time_cur = ids["time"][i_current]
+        time_cur = int_(ids["time"][i_current])
         t0, t1 = time_cur - 1 - time_ref, max(time_cur - window - time_ref, 0)
         for t_step in range(t0, t1 - 1, -1):
             i0, i1 = time_s[t_step], time_e[t_step]
@@ -712,9 +731,9 @@ class TrackEddiesObservations(GroupEddiesObservations):
             if len(ii) == 0:
                 continue
             c = zeros(len(xj))
-            c[ij] = vertice_overlap(xi[ii], yi[ii], xj[ij], yj[ij], **kwargs)
-            # We remove low overlap
-            c[c < 0.01] = 0
+            c[ij] = vertice_overlap(
+                xi[ii], yi[ii], xj[ij], yj[ij], min_overlap=min_overlap, **kwargs
+            )
             # We get index of maximal overlap
             i = c.argmax()
             c_i = c[i]
@@ -726,10 +745,21 @@ class TrackEddiesObservations(GroupEddiesObservations):
             break
 
     @staticmethod
-    def get_next_obs(i_current, ids, x, y, time_s, time_e, time_ref, window, **kwargs):
+    def get_next_obs(
+        i_current,
+        ids,
+        x,
+        y,
+        time_s,
+        time_e,
+        time_ref,
+        window,
+        min_overlap=0.2,
+        **kwargs,
+    ):
         """Forward association of observations to the segments"""
         time_max = time_e.shape[0] - 1
-        time_cur = ids["time"][i_current]
+        time_cur = int_(ids["time"][i_current])
         t0, t1 = time_cur + 1 - time_ref, min(time_cur + window - time_ref, time_max)
         if t0 > time_max:
             return -1
@@ -744,9 +774,9 @@ class TrackEddiesObservations(GroupEddiesObservations):
             if len(ii) == 0:
                 continue
             c = zeros(len(xj))
-            c[ij] = vertice_overlap(xi[ii], yi[ii], xj[ij], yj[ij], **kwargs)
-            # We remove low overlap
-            c[c < 0.01] = 0
+            c[ij] = vertice_overlap(
+                xi[ii], yi[ii], xj[ij], yj[ij], min_overlap=min_overlap, **kwargs
+            )
             # We get index of maximal overlap
             i = c.argmax()
             c_i = c[i]

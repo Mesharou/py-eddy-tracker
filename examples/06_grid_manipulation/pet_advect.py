@@ -10,9 +10,9 @@ from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 from numpy import arange, isnan, meshgrid, ones
 
-import py_eddy_tracker.gui
 from py_eddy_tracker.data import get_demo_path
 from py_eddy_tracker.dataset.grid import RegularGridDataset
+from py_eddy_tracker.gui import GUI_AXES
 from py_eddy_tracker.observations.observation import EddiesObservations
 
 # %%
@@ -32,7 +32,7 @@ c = EddiesObservations.load_file(get_demo_path("Cyclonic_20160515.nc"))
 # %%
 # Quiver from u/v with eddies
 fig = plt.figure(figsize=(10, 5))
-ax = fig.add_axes([0, 0, 1, 1], projection="full_axes")
+ax = fig.add_axes([0, 0, 1, 1], projection=GUI_AXES)
 ax.set_xlim(19, 30), ax.set_ylim(31, 36.5), ax.grid()
 x, y = meshgrid(g.x_c, g.y_c)
 a.filled(ax, facecolors="r", alpha=0.1), c.filled(ax, facecolors="b", alpha=0.1)
@@ -50,7 +50,7 @@ class VideoAnimation(FuncAnimation):
 
     def save(self, *args, **kwargs):
         if args[0].endswith("gif"):
-            # In this case gif is use to create thumbnail which are not use but consume same time than video
+            # In this case gif is used to create thumbnail which is not used but consume same time than video
             # So we create an empty file, to save time
             with open(args[0], "w") as _:
                 pass
@@ -73,7 +73,7 @@ x, y = x0.copy(), y0.copy()
 # %%
 # Movie properties
 kwargs = dict(frames=arange(51), interval=100)
-kw_p = dict(nb_step=2, time_step=21600)
+kw_p = dict(u_name="u", v_name="v", nb_step=2, time_step=21600)
 frame_t = kw_p["nb_step"] * kw_p["time_step"] / 86400.0
 
 
@@ -82,7 +82,7 @@ frame_t = kw_p["nb_step"] * kw_p["time_step"] / 86400.0
 def anim_ax(**kw):
     t = 0
     fig = plt.figure(figsize=(10, 5), dpi=55)
-    axes = fig.add_axes([0, 0, 1, 1], projection="full_axes")
+    axes = fig.add_axes([0, 0, 1, 1], projection=GUI_AXES)
     axes.set_xlim(19, 30), axes.set_ylim(31, 36.5), axes.grid()
     a.filled(axes, facecolors="r", alpha=0.1), c.filled(axes, facecolors="b", alpha=0.1)
     line = axes.plot([], [], "k", **kw)[0]
@@ -102,7 +102,7 @@ def update(i_frame, t_step):
 # ^^^^^^^^^^^^^^^^
 # Draw 3 last position in one path for each particles.,
 # it could be run backward with `backward=True` option in filament method
-p = g.filament(x, y, "u", "v", **kw_p, filament_size=3)
+p = g.filament(x, y, **kw_p, filament_size=3)
 fig, txt, l, t = anim_ax(lw=0.5)
 _ = VideoAnimation(fig, update, **kwargs, fargs=(frame_t,))
 
@@ -110,13 +110,13 @@ _ = VideoAnimation(fig, update, **kwargs, fargs=(frame_t,))
 # Particle forward
 # ^^^^^^^^^^^^^^^^^
 # Forward advection of particles
-p = g.advect(x, y, "u", "v", **kw_p)
+p = g.advect(x, y, **kw_p)
 fig, txt, l, t = anim_ax(ls="", marker=".", markersize=1)
 _ = VideoAnimation(fig, update, **kwargs, fargs=(frame_t,))
 
 # %%
 # We get last position and run backward until original position
-p = g.advect(x, y, "u", "v", **kw_p, backward=True)
+p = g.advect(x, y, **kw_p, backward=True)
 fig, txt, l, _ = anim_ax(ls="", marker=".", markersize=1)
 _ = VideoAnimation(fig, update, **kwargs, fargs=(-frame_t,))
 
@@ -139,9 +139,11 @@ kw = dict(
 )
 for time_step in (10800, 21600, 43200, 86400):
     x, y = x0.copy(), y0.copy()
-    kw_advect = dict(nb_step=int(50 * 86400 / time_step), time_step=time_step)
-    g.advect(x, y, "u", "v", **kw_advect).__next__()
-    g.advect(x, y, "u", "v", **kw_advect, backward=True).__next__()
+    kw_advect = dict(
+        nb_step=int(50 * 86400 / time_step), time_step=time_step, u_name="u", v_name="v"
+    )
+    g.advect(x, y, **kw_advect).__next__()
+    g.advect(x, y, **kw_advect, backward=True).__next__()
     d = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
     ax.hist(d, **kw, label=f"{86400. / time_step:.0f} time step by day")
 ax.set_xlim(0, 0.25), ax.set_ylim(0, 100), ax.legend(loc="lower right"), ax.grid()
@@ -158,9 +160,14 @@ ax = fig.add_subplot(111)
 time_step = 10800
 for duration in (5, 50, 100):
     x, y = x0.copy(), y0.copy()
-    kw_advect = dict(nb_step=int(duration * 86400 / time_step), time_step=time_step)
-    g.advect(x, y, "u", "v", **kw_advect).__next__()
-    g.advect(x, y, "u", "v", **kw_advect, backward=True).__next__()
+    kw_advect = dict(
+        nb_step=int(duration * 86400 / time_step),
+        time_step=time_step,
+        u_name="u",
+        v_name="v",
+    )
+    g.advect(x, y, **kw_advect).__next__()
+    g.advect(x, y, **kw_advect, backward=True).__next__()
     d = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
     ax.hist(d, **kw, label=f"Time duration {duration} days")
 ax.set_xlim(0, 0.25), ax.set_ylim(0, 100), ax.legend(loc="lower right"), ax.grid()

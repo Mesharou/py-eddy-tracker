@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
+from setuptools import find_packages, setup
+
 import versioneer
-from setuptools import setup, find_packages
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
@@ -48,6 +49,7 @@ setup(
             "EddyNetworkGroup = py_eddy_tracker.appli.network:build_network",
             "EddyNetworkBuildPath = py_eddy_tracker.appli.network:divide_network",
             "EddyNetworkSubSetter = py_eddy_tracker.appli.network:subset_network",
+            "EddyNetworkQuickCompare = py_eddy_tracker.appli.network:quick_compare",
             # anim/gui
             "EddyAnim = py_eddy_tracker.appli.gui:anim",
             "GUIEddy = py_eddy_tracker.appli.gui:guieddy",

@@ -2,14 +2,13 @@
 """
 Class to load and manipulate RegularGrid and UnRegularGrid
 """
-import logging
 from datetime import datetime
+import logging
 
 from cv2 import filter2D
 from matplotlib.path import Path as BasePath
 from netCDF4 import Dataset
-from numba import njit, prange
-from numba import types as numba_types
+from numba import njit, prange, types as numba_types
 from numpy import (
     arange,
     array,
@@ -28,9 +27,7 @@ from numpy import (
     isnan,
     linspace,
     ma,
-)
-from numpy import mean as np_mean
-from numpy import (
+    mean as np_mean,
     meshgrid,
     nan,
     nanmean,
@@ -262,6 +259,7 @@ class GridDataset(object):
         "global_attrs",
         "vars",
         "contours",
+        "nan_mask",
     )
 
     GRAVITY = 9.807
@@ -271,7 +269,15 @@ class GridDataset(object):
     N = 1
 
     def __init__(
-        self, filename, x_name, y_name, gridname=None, centered=None, indexs=None, unset=False
+        self,
+        filename,
+        x_name,
+        y_name,
+        gridname=None,
+        centered=None,
+        indexs=None,
+        unset=False,
+        nan_masking=False,
     ):
         """
         :param str filename: Filename to load
@@ -281,6 +287,7 @@ class GridDataset(object):
         :param bool,None centered: Allow to know how coordinates could be used with pixel
         :param dict indexs: A dictionary that sets indexes to use for non-coordinate dimensions
         :param bool unset: Set to True to create an empty grid object without file
+        :param bool nan_masking: Set to True to replace data.mask with isnan method result
         """
         self.dimensions = None
         self.variables_description = None
@@ -291,6 +298,7 @@ class GridDataset(object):
         self.y_bounds = None
         self.x_dim = None
         self.y_dim = None
+        self.nan_mask = nan_masking
         self.centered = centered
         self.contours = None
         self.filename = filename
@@ -306,8 +314,25 @@ class GridDataset(object):
                 "We assume pixel position of grid is centered for %s", filename
             )
         if not unset:
+            self.populate()
+
+    def populate(self):
+        if self.dimensions is None:
             self.load_general_features()
             self.load()
+
+    def clean(self):
+        self.dimensions = None
+        self.variables_description = None
+        self.global_attrs = None
+        self.x_c = None
+        self.y_c = None
+        self.x_bounds = None
+        self.y_bounds = None
+        self.x_dim = None
+        self.y_dim = None
+        self.contours = None
+        self.vars = dict()
 
     @property
     def is_centered(self):
@@ -403,6 +428,14 @@ class GridDataset(object):
         self.setup_coordinates()
 
     @staticmethod
+    def get_mask(a):
+        if len(a.mask.shape):
+            m = a.mask
+        else:
+            m = ones(a.shape, dtype="bool") if a.mask else zeros(a.shape, dtype="bool")
+        return m
+
+    @staticmethod
     def c_to_bounds(c):
         """
         Centered coordinates to bounds coordinates
@@ -419,7 +452,7 @@ class GridDataset(object):
     def setup_coordinates(self):
         x_name, y_name = self.coordinates
         if self.is_centered:
-            logger.info("Grid center")
+            # logger.info("Grid center")
             self.x_c = self.vars[x_name].astype("float64")
             self.y_c = self.vars[y_name].astype("float64")
 
@@ -529,6 +562,11 @@ class GridDataset(object):
                     if i_x > i_y:
                         self.variables_description[varname]["infos"]["transpose"] = True
                         self.vars[varname] = self.vars[varname].T
+            if self.nan_mask:
+                self.vars[varname] = ma.array(
+                    self.vars[varname],
+                    mask=isnan(self.vars[varname]),
+                )
             if not hasattr(self.vars[varname], "mask"):
                 self.vars[varname] = ma.array(
                     self.vars[varname],
@@ -605,6 +643,7 @@ class GridDataset(object):
         z_max=None,
         step=0.005,
         shape_error=55,
+        presampling_multiplier=10,
         sampling=50,
         sampling_method="visvalingam",
         pixel_limit=None,
@@ -630,14 +669,19 @@ class GridDataset(object):
         :param float,int shape_error: Maximal error allow for outter contour in %
         :param int sampling: Sampling of contour and speed profile
         :param float,int shape_error: Maximal error allowed for outermost contour in %
+        :param int presampling_multiplier:
+            Evenly oversample the initial number of points in the contour by nb_pts x presampling_multiplier to fit circles
         :param int sampling: Number of points to store contours and speed profile
-        :param str sampling_method: Method to resample, 'uniform' or 'visvalingam'
+        :param str sampling_method: Method to resample the stored contours, 'uniform' or 'visvalingam'
         :param (int,int),None pixel_limit:
             Min and max number of pixels inside the inner and the outermost contour to be considered as an eddy
         :param float,None precision: Truncate values at the defined precision in m
         :param str force_height_unit: Unit used for height unit
         :param str force_speed_unit: Unit used for speed unit
-        :param dict kwargs: Argument given to amplitude
+        :param dict kwargs: Arguments given to amplitude (mle, nb_step_min, nb_step_to_be_mle).
+            Look at :py:meth:`py_eddy_tracker.eddy_feature.Amplitude`
+            The amplitude threshold is given by `step*nb_step_min`
+
 
         :return: Return a list of 2 elements: Anticyclones and Cyclones
         :rtype: py_eddy_tracker.observations.observation.EddiesObservations
@@ -714,6 +758,7 @@ class GridDataset(object):
                 percentile(data_tmp, epsilon),
                 percentile(data_tmp, 100 - epsilon),
             )
+
             d_zp = z_max_p - z_min_p
             if d_z / d_zp > 2:
                 logger.warning(
@@ -728,7 +773,7 @@ class GridDataset(object):
         logger.warning('z_min, z_max, step are: %f, %f, %f.',z_min, z_max, step) #debug
         levels = arange(z_min - z_min % step, z_max - z_max % step + step, step)
         print('levels used are:',levels)
-        
+
         # Get x and y values
         x, y = self.x_c, self.y_c
 
@@ -848,7 +893,7 @@ class GridDataset(object):
                         else:
                             centi = reset_centroid[0]
                         centj = reset_centroid[1]
-                        # To move in regular and unregular grid
+                        # FIXME : To move in regular and unregular grid
                         if len(x.shape) == 1:
                             centlon_e = x[centi]
                             centlat_e = y[centj]
@@ -893,42 +938,59 @@ class GridDataset(object):
                     obs.amplitude[:] = amp.amplitude
                     obs.speed_average[:] = max_average_speed
                     obs.num_point_e[:] = contour.lon.shape[0]
-                    xy_e = resample(contour.lon, contour.lat, **out_sampling)
-                    obs.contour_lon_e[:], obs.contour_lat_e[:] = xy_e
                     obs.num_point_s[:] = speed_contour.lon.shape[0]
-                    xy_s = resample(
-                        speed_contour.lon, speed_contour.lat, **out_sampling
-                    )
-                    obs.contour_lon_s[:], obs.contour_lat_s[:] = xy_s
 
-                    # FIXME : we use a contour without resampling
-                    # First, get position based on innermost contour
-                    centlon_i, centlat_i, _, _ = _fit_circle_path(
-                        create_vertice(inner_contour.lon, inner_contour.lat)
+                    # Evenly resample contours with nb_pts = nb_pts_original x presampling_multiplier
+                    xy_i = uniform_resample(
+                        inner_contour.lon,
+                        inner_contour.lat,
+                        num_fac=presampling_multiplier,
                     )
-                    # Second, get speed-based radius based on contour of max uavg
+                    xy_e = uniform_resample(
+                        contour.lon,
+                        contour.lat,
+                        num_fac=presampling_multiplier,
+                    )
+                    xy_s = uniform_resample(
+                        speed_contour.lon,
+                        speed_contour.lat,
+                        num_fac=presampling_multiplier,
+                    )
+
+                    # First, get position of max SSH based on best fit circle with resampled innermost contour
+                    centlon_i, centlat_i, _, _ = _fit_circle_path(create_vertice(*xy_i))
+                    obs.lon_max[:] = centlon_i
+                    obs.lat_max[:] = centlat_i
+
+                    # Second, get speed-based radius, shape error, eddy center, area based on resampled contour of max uavg
                     centlon_s, centlat_s, eddy_radius_s, aerr_s = _fit_circle_path(
                         create_vertice(*xy_s)
                     )
-                    # Compute again to use resampled contour
-                    _, _, eddy_radius_e, aerr_e = _fit_circle_path(
-                        create_vertice(*xy_e)
-                    )
-
                     obs.radius_s[:] = eddy_radius_s
-                    obs.radius_e[:] = eddy_radius_e
-                    obs.shape_error_e[:] = aerr_e
                     obs.shape_error_s[:] = aerr_s
                     obs.speed_area[:] = poly_area(
                         *coordinates_to_local(*xy_s, lon0=centlon_s, lat0=centlat_s)
                     )
+                    obs.lon[:] = centlon_s
+                    obs.lat[:] = centlat_s
+
+                    # Third, compute effective radius, shape error, area from resampled effective contour
+                    _, _, eddy_radius_e, aerr_e = _fit_circle_path(
+                        create_vertice(*xy_e)
+                    )
+                    obs.radius_e[:] = eddy_radius_e
+                    obs.shape_error_e[:] = aerr_e
                     obs.effective_area[:] = poly_area(
                         *coordinates_to_local(*xy_e, lon0=centlon_s, lat0=centlat_s)
                     )
-                    obs.lon[:] = centlon_s
-                    obs.lat[:] = centlat_s
-                    obs.lon_max[:] = centlon_i
-                    obs.lat_max[:] = centlat_i
+
+                    # Finally, resample contours with output parameters
+                    xy_e_f = resample(*xy_e, **out_sampling)
+                    xy_s_f = resample(*xy_s, **out_sampling)
+
+                    obs.contour_lon_s[:], obs.contour_lat_s[:] = xy_s_f
+                    obs.contour_lon_e[:], obs.contour_lat_e[:] = xy_e_f
+
                     if aerr > 99.9 or aerr_s > 99.9:
                         logger.warning(
                             "Strange shape at this step! shape_error : %f, %f",
@@ -1168,7 +1230,7 @@ class UnRegularGridDataset(GridDataset):
         bins = (x_array, y_array)
 
         x_flat, y_flat, z_flat = x.reshape((-1,)), y.reshape((-1,)), data.reshape((-1,))
-        m = ~z_flat.mask
+        m = ~self.get_mask(z_flat)
         x_flat, y_flat, z_flat = x_flat[m], y_flat[m], z_flat[m]
 
         nb_value, _, _ = histogram2d(x_flat, y_flat, bins=bins)
@@ -1234,6 +1296,12 @@ class RegularGridDataset(GridDataset):
         if len(self.x_c.shape) != 1:
             raise Exception(
                 "Coordinates in RegularGridDataset must be 1D array, or think to use UnRegularGridDataset"
+            )
+        dx = self.x_bounds[1:] - self.x_bounds[:-1]
+        dy = self.y_bounds[1:] - self.y_bounds[:-1]
+        if (dx < 0).any() or (dy < 0).any():
+            raise Exception(
+                "Coordinates in RegularGridDataset must be strictly increasing"
             )
         self._x_step = (self.x_c[1:] - self.x_c[:-1]).mean()
         self._y_step = (self.y_c[1:] - self.y_c[:-1]).mean()
@@ -1479,7 +1547,8 @@ class RegularGridDataset(GridDataset):
             tmp_matrix = ma.zeros((2 * d_lon + data.shape[0], k_shape[1]))
             tmp_matrix.mask = ones(tmp_matrix.shape, dtype=bool)
             # Slice to apply on input data
-            sl_lat_data = slice(max(0, i - d_lat), min(i + d_lat, data.shape[1]))
+            # +1 for upper bound, to take in acount this column
+            sl_lat_data = slice(max(0, i - d_lat), min(i + d_lat + 1, data.shape[1]))
             # slice to apply on temporary matrix to store input data
             sl_lat_in = slice(
                 d_lat - (i - sl_lat_data.start), d_lat + (sl_lat_data.stop - i)
@@ -1765,7 +1834,7 @@ class RegularGridDataset(GridDataset):
             self.x_c,
             self.y_c,
             data.data,
-            data.mask,
+            self.get_mask(data),
             self.EARTH_RADIUS,
             vertical=vertical,
             stencil_halfwidth=stencil_halfwidth,
@@ -1973,14 +2042,6 @@ class RegularGridDataset(GridDataset):
         # self.variables_description[new_name]['infos'] = False
         # self.variables_description[new_name]['kwargs']['dimensions'] = ...
 
-    @staticmethod
-    def get_mask(a):
-        if len(a.mask.shape):
-            m = a.mask
-        else:
-            m = ones(a.shape) if a.mask else zeros(a.shape)
-        return m
-
     def interp(self, grid_name, lons, lats, method="bilinear"):
         """
         Compute z over lons, lats
@@ -1998,14 +2059,29 @@ class RegularGridDataset(GridDataset):
             self.x_c, self.y_c, g, m, lons, lats, nearest=method == "nearest"
         )
 
-    def uv_for_advection(self, u_name, v_name, time_step=600, backward=False, factor=1):
+    def uv_for_advection(
+        self,
+        u_name=None,
+        v_name=None,
+        time_step=600,
+        h_name=None,
+        backward=False,
+        factor=1,
+    ):
         """
         Get U,V to be used in degrees with precomputed time step
 
-        :param str,array u_name: U field to advect obs
-        :param str,array v_name: V field to advect obs
+        :param None,str,array u_name: U field to advect obs, if h_name is None
+        :param None,str,array v_name: V field to advect obs, if h_name is None
+        :param None,str,array h_name: H field to compute UV to advect obs, if u_name and v_name are None
         :param int time_step: Number of second for each advection
         """
+        if h_name is not None:
+            u_name, v_name = "u", "v"
+            if u_name not in self.vars:
+                self.add_uv(h_name)
+                self.vars.pop(h_name, None)
+
         u = (self.grid(u_name) if isinstance(u_name, str) else u_name).copy()
         v = (self.grid(v_name) if isinstance(v_name, str) else v_name).copy()
         # N seconds / 1 degrees in m
@@ -2322,27 +2398,40 @@ class GridCollection:
         self.datasets = list()
 
     @classmethod
-    def from_netcdf_cube(cls, filename, x_name, y_name, t_name, heigth=None):
+    def from_netcdf_cube(cls, filename, x_name, y_name, t_name, heigth=None, **kwargs):
         new = cls()
         with Dataset(filename) as h:
             for i, t in enumerate(h.variables[t_name][:]):
-                d = RegularGridDataset(filename, x_name, y_name, indexs={t_name: i})
+                d = RegularGridDataset(
+                    filename, x_name, y_name, indexs={t_name: i}, **kwargs
+                )
                 if heigth is not None:
                     d.add_uv(heigth)
                 new.datasets.append((t, d))
         return new
 
     @classmethod
-    def from_netcdf_list(cls, filenames, t, x_name, y_name, indexs=None, heigth=None):
+    def from_netcdf_list(
+        cls, filenames, t, x_name, y_name, indexs=None, heigth=None, **kwargs
+    ):
         new = cls()
         for i, _t in enumerate(t):
             filename = filenames[i]
             logger.debug(f"load file {i:02d}/{len(t)} t={_t} : {filename}")
-            d = RegularGridDataset(filename, x_name, y_name, indexs=indexs)
+            d = RegularGridDataset(filename, x_name, y_name, indexs=indexs, **kwargs)
             if heigth is not None:
                 d.add_uv(heigth)
             new.datasets.append((_t, d))
         return new
+
+
+    @property
+    def are_loaded(self):
+        return ~array([d.dimensions is None for _, d in self.datasets])
+
+    def __repr__(self):
+        nb_dataset = len(self.datasets)
+        return f"{self.are_loaded.sum()}/{nb_dataset} datasets loaded"
 
     def shift_files(self, t, filename, heigth=None, **rgd_kwargs):
         """Add next file to the list and remove the oldest"""
@@ -2386,6 +2475,7 @@ class GridCollection:
     def __getitem__(self, item):
         for t, d in self.datasets:
             if t == item:
+                d.populate()
                 return d
         raise KeyError(item)
 
@@ -2465,17 +2555,23 @@ class GridCollection:
             t += dt
             yield t, f_x, f_y
 
+    def reset_grids(self, N=None):
+        if N is not None:
+            m = self.are_loaded
+            if m.sum() > N:
+                for i in where(m)[0]:
+                    self.datasets[i][1].clean()
+
     def advect(
         self,
         x,
         y,
-        u_name,
-        v_name,
         t_init,
         mask_particule=None,
         nb_step=10,
         time_step=600,
         rk4=True,
+        reset_grid=None,
         **kw,
     ):
         """
@@ -2483,15 +2579,18 @@ class GridCollection:
 
         :param array x: Longitude of obs to move
         :param array y: Latitude of obs to move
-        :param str,array u_name: U field to advect obs
-        :param str,array v_name: V field to advect obs
+        :param float t_init: time to start advection
+        :param array,None mask_particule: advect only i mask is True
         :param int nb_step: Number of iteration before to release data
         :param int time_step: Number of second for each advection
+        :param bool rk4: Use rk4 algorithm instead of finite difference
+        :param int reset_grid: Delete all loaded data in cube if there are more than N grid loaded
 
-        :return: x,y position
+        :return: t,x,y position
 
         .. minigallery:: py_eddy_tracker.GridCollection.advect
         """
+        self.reset_grids(reset_grid)
         backward = kw.get("backward", False)
         if backward:
             generator = self.get_previous_time_step(t_init)
@@ -2502,9 +2601,9 @@ class GridCollection:
             dt = nb_step * time_step
             t_step = time_step
         t0, d0 = generator.__next__()
-        u0, v0, m0 = d0.uv_for_advection(u_name, v_name, time_step, **kw)
+        u0, v0, m0 = d0.uv_for_advection(time_step=time_step, **kw)
         t1, d1 = generator.__next__()
-        u1, v1, m1 = d1.uv_for_advection(u_name, v_name, time_step, **kw)
+        u1, v1, m1 = d1.uv_for_advection(time_step=time_step, **kw)
         t0 = t0 * 86400
         t1 = t1 * 86400
         t = t_init * 86400
@@ -2514,12 +2613,12 @@ class GridCollection:
         else:
             mask_particule += isnan(x) + isnan(y)
         while True:
-            logger.debug(f"advect : t={t}")
+            logger.debug(f"advect : t={t/86400}")
             if (backward and t <= t1) or (not backward and t >= t1):
                 t0, u0, v0, m0 = t1, u1, v1, m1
                 t1, d1 = generator.__next__()
                 t1 = t1 * 86400
-                u1, v1, m1 = d1.uv_for_advection(u_name, v_name, time_step, **kw)
+                u1, v1, m1 = d1.uv_for_advection(time_step=time_step, **kw)
             w = 1 - (arange(t, t + dt, t_step) - t0) / (t1 - t0)
             half_w = t_step / 2.0 / (t1 - t0)
             advect_(
@@ -2544,7 +2643,7 @@ class GridCollection:
         for i, (t, dataset) in enumerate(self.datasets):
             if t < t_init:
                 continue
-
+            dataset.populate()
             logger.debug(f"i={i}, t={t}, dataset={dataset}")
             yield t, dataset
 
@@ -2554,9 +2653,31 @@ class GridCollection:
             i -= 1
             if t > t_init:
                 continue
-
+            dataset.populate()
             logger.debug(f"i={i}, t={t}, dataset={dataset}")
             yield t, dataset
+
+    def path(self, x0, y0, *args, nb_time=2, **kwargs):
+        """
+        At each call it will update position in place with u & v field
+
+        :param array x0: Longitude of obs to move
+        :param array y0: Latitude of obs to move
+        :param int nb_time: Number of iteration for particle
+        :param dict kwargs: look at :py:meth:`GridCollection.advect`
+
+        :return: t,x,y
+
+        .. minigallery:: py_eddy_tracker.GridCollection.path
+        """
+        particles = self.advect(x0.copy(), y0.copy(), *args, **kwargs)
+        t = empty(nb_time + 1, dtype="f8")
+        x = empty((nb_time + 1, x0.size), dtype=x0.dtype)
+        y = empty(x.shape, dtype=y0.dtype)
+        t[0], x[0], y[0] = kwargs.get("t_init"), x0, y0
+        for i in range(nb_time):
+            t[i + 1], x[i + 1], y[i + 1] = particles.__next__()
+        return t, x, y
 
 
 @njit(cache=True)
