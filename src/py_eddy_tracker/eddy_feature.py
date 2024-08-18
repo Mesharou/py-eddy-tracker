@@ -192,8 +192,9 @@ class Amplitude(object):
                     (self.grid_extract.data[lmi_i, lmi_j] - level)
                     >= self.interval_min_secondary
                 ).sum()
-                if nb_real_extrema > self.mle:
-                    return False
+                if grid_height!='ow':
+                    if nb_real_extrema > self.mle:
+                        return False
                 index = self.grid_extract.data[lmi_i, lmi_j].argmax()
                 i, j = lmi_i[index], lmi_j[index]
             self.amplitude = abs(self.grid_extract.data[i, j] - self.h_0)
